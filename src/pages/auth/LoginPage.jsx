@@ -98,6 +98,13 @@ export function LoginPage() {
         </Tabs>
       ) : null}
 
+      {bootstrapStatus?.maintenanceMode ? (
+        <Alert severity="warning" sx={{ mb: 2.5 }}>
+          Platform maintenance notice is active.
+          {bootstrapStatus.supportContactEmail ? ` Need help? Contact ${bootstrapStatus.supportContactEmail}.` : ''}
+        </Alert>
+      ) : null}
+
       {serverError ? (
         <Alert severity="error" sx={{ mb: 2.5 }}>
           {serverError}

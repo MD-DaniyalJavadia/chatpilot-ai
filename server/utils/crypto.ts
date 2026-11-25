@@ -87,8 +87,12 @@ export function verifyJwt(token: string): JwtPayload | null {
   }
 
   try {
+    const header = JSON.parse(base64UrlDecode(headerB64)) as { alg?: unknown; typ?: unknown };
+    if (header.alg !== 'HS256' || header.typ !== 'JWT') return null;
+
     const parsed = JSON.parse(base64UrlDecode(payloadB64)) as JwtPayload;
     const now = Math.floor(Date.now() / 1000);
+    if (!Number.isInteger(parsed.sub) || parsed.sub <= 0) return null;
     if (parsed.iss !== config.jwtIssuer || parsed.aud !== config.jwtAudience) return null;
     if (typeof parsed.exp !== 'number' || parsed.exp <= now) return null;
     return parsed;

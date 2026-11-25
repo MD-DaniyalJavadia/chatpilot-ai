@@ -41,23 +41,87 @@ function isPrivateOrReservedIpv4(ip: string): boolean {
   return false;
 }
 
+function parseIpv6ToWords(ip: string): number[] | null {
+  const bare = ip.split('%')[0].toLowerCase();
+  const doubleColonParts = bare.split('::');
+  if (doubleColonParts.length > 2) return null;
+
+  const parseSegmentGroup = (part: string): number[] | null => {
+    if (!part) return [];
+    const tokens = part.split(':');
+    const out: number[] = [];
+    for (let i = 0; i < tokens.length; i += 1) {
+      const token = tokens[i];
+      if (!token) return null;
+      if (token.includes('.')) {
+        if (i !== tokens.length - 1 || !net.isIPv4(token)) return null;
+        const octets = token.split('.').map((n) => Number(n));
+        out.push((octets[0] << 8) | octets[1], (octets[2] << 8) | octets[3]);
+      } else {
+        if (!/^[0-9a-f]{1,4}$/.test(token)) return null;
+        out.push(parseInt(token, 16));
+      }
+    }
+    return out;
+  };
+
+  if (doubleColonParts.length === 1) {
+    const words = parseSegmentGroup(doubleColonParts[0]);
+    return words && words.length === 8 ? words : null;
+  }
+
+  const head = parseSegmentGroup(doubleColonParts[0]);
+  const tail = parseSegmentGroup(doubleColonParts[1]);
+  if (!head || !tail) return null;
+  const missing = 8 - (head.length + tail.length);
+  if (missing < 1) return null;
+  return [...head, ...Array(missing).fill(0), ...tail];
+}
+
+function wordsToIpv4(hi: number, lo: number): string {
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+}
+
 function isPrivateOrReservedIp(ip: string): boolean {
-  const normalized = ip.toLowerCase();
+  const normalized = ip.toLowerCase().replace(/^\[|\]$/g, '').split('%')[0];
   const version = net.isIP(normalized);
   if (version === 4) {
     return isPrivateOrReservedIpv4(normalized);
   }
   if (version === 6) {
-    if (normalized === '::' || normalized === '::1') return true;
-    if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true; // ULA fc00::/7
-    if (normalized.startsWith('fe80:')) return true; // link-local
-    if (normalized.startsWith('ff')) return true; // multicast
-    if (normalized.startsWith('::ffff:')) {
-      const mapped = normalized.slice(7);
-      if (net.isIPv4(mapped)) {
-        return isPrivateOrReservedIpv4(mapped);
-      }
+    const words = parseIpv6ToWords(normalized);
+    if (!words) return true;
+
+    const allZeroPrefix6 =
+      words[0] === 0 && words[1] === 0 && words[2] === 0 && words[3] === 0 && words[4] === 0;
+
+    // Unspecified (::), loopback (::1), IPv4-compatible (::/96)
+    if (allZeroPrefix6 && words[5] === 0) {
+      if (words[6] === 0 && (words[7] === 0 || words[7] === 1)) return true;
+      return isPrivateOrReservedIpv4(wordsToIpv4(words[6], words[7]));
     }
+
+    // IPv4-mapped (::ffff:0:0/96)
+    if (allZeroPrefix6 && words[5] === 0xffff) {
+      return isPrivateOrReservedIpv4(wordsToIpv4(words[6], words[7]));
+    }
+
+    // NAT64 well-known prefix (64:ff9b::/96)
+    if (
+      words[0] === 0x0064 &&
+      words[1] === 0xff9b &&
+      words[2] === 0 &&
+      words[3] === 0 &&
+      words[4] === 0 &&
+      words[5] === 0
+    ) {
+      return isPrivateOrReservedIpv4(wordsToIpv4(words[6], words[7]));
+    }
+
+    if ((words[0] & 0xfe00) === 0xfc00) return true; // ULA fc00::/7
+    if ((words[0] & 0xffc0) === 0xfe80) return true; // Link-local fe80::/10
+    if ((words[0] & 0xff00) === 0xff00) return true; // Multicast ff00::/8
+    if (words[0] === 0x2001 && words[1] === 0x0db8) return true; // Documentation 2001:db8::/32
     return false;
   }
   return true;
@@ -83,7 +147,7 @@ export async function assertSafePublicUrl(rawUrl: string): Promise<URL> {
     throw new WebsiteCrawlerError(400, 'Only standard HTTP/HTTPS ports (80/443) are permitted.');
   }
 
-  const hostname = parsed.hostname.toLowerCase();
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
   if (
     !hostname ||
     BLOCKED_HOSTNAMES.has(hostname) ||

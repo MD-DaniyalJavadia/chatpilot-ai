@@ -125,8 +125,20 @@ export function evaluateWidgetOrigin(params: {
   const requestHost = extractRequestHost(params.requestHostHeader);
   const requestHostname = requestHost.split(':')[0];
 
-  // Server-to-server / direct non-browser calls without Origin or Referer
+  const rows = db
+    .prepare(`SELECT Domain AS domain FROM AllowedDomains WHERE ChatbotId = ?`)
+    .all(params.chatbotId) as Array<{ domain: string }>;
+
+  // Direct calls without Origin or Referer are permitted only before domain allowlisting is configured
   if (!originInfo) {
+    if (rows.length > 0) {
+      return {
+        allowed: false,
+        corsOrigin: null,
+        visitorDomain: requestHostname || 'direct',
+        reason: 'Origin or Referer header is required when domain allowlisting is enabled.',
+      };
+    }
     return {
       allowed: true,
       corsOrigin: null,
@@ -146,10 +158,6 @@ export function evaluateWidgetOrigin(params: {
       visitorDomain: originInfo.hostWithPort,
     };
   }
-
-  const rows = db
-    .prepare(`SELECT Domain AS domain FROM AllowedDomains WHERE ChatbotId = ?`)
-    .all(params.chatbotId) as Array<{ domain: string }>;
 
   const matched = rows.some((row) => matchesAllowedDomain(originInfo, row.domain));
   if (!matched) {

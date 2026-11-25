@@ -55,20 +55,22 @@ export function isGeminiConfigured(): boolean {
   return Boolean(apiKey && apiKey !== 'MY_GEMINI_API_KEY');
 }
 
-export async function generateGeminiReply(params: {
+function isValidGeminiModelId(model: string): boolean {
+  return SUPPORTED_GEMINI_MODELS.has(model) || /^gemini-[a-zA-Z0-9._-]{2,80}$/.test(model);
+}
+
+function buildGenerateParams(params: {
   model: string;
   systemInstruction: string;
   history: PlaygroundTurn[];
   userMessage: string;
   temperature: number;
   maxOutputTokens: number;
-}): Promise<GeminiReplyResult> {
+}) {
   const model = params.model.trim();
-  if (!SUPPORTED_GEMINI_MODELS.has(model)) {
+  if (!isValidGeminiModelId(model)) {
     throw new GeminiServiceError(400, `Unsupported Gemini model "${model}".`);
   }
-
-  const ai = getGeminiClient();
 
   const contents = [
     ...params.history.slice(-16).map((turn) => ({
@@ -92,6 +94,48 @@ export async function generateGeminiReply(params: {
     config.temperature = params.temperature;
     config.maxOutputTokens = params.maxOutputTokens;
   }
+
+  return { model, contents, config };
+}
+
+function mapGeminiError(err: unknown, model: string): GeminiServiceError {
+  if (err instanceof GeminiServiceError) {
+    return err;
+  }
+
+  const status = Number((err as { status?: number })?.status || 0);
+  const rawMsg = err instanceof Error ? err.message : 'Unknown Gemini API error';
+  console.error('[GeminiService Error]', status || 'ERR', rawMsg.slice(0, 200));
+
+  if (status === 429 || /RESOURCE_EXHAUSTED|quota|rate limit/i.test(rawMsg)) {
+    return new GeminiServiceError(
+      429,
+      'Gemini API rate limit or quota reached. Wait a moment or check your billing tier in Settings > Secrets.'
+    );
+  }
+  if (status === 401 || status === 403 || /API_KEY_INVALID|PERMISSION_DENIED/i.test(rawMsg)) {
+    return new GeminiServiceError(
+      403,
+      'Gemini API key was rejected or lacks permission for this model. Verify GEMINI_API_KEY in Settings > Secrets.'
+    );
+  }
+  if (status === 404 || /NOT_FOUND/i.test(rawMsg)) {
+    return new GeminiServiceError(400, `Model "${model}" was not found or is unavailable for your key.`);
+  }
+
+  return new GeminiServiceError(502, 'Unable to reach Gemini API right now. Please try again.');
+}
+
+export async function generateGeminiReply(params: {
+  model: string;
+  systemInstruction: string;
+  history: PlaygroundTurn[];
+  userMessage: string;
+  temperature: number;
+  maxOutputTokens: number;
+}): Promise<GeminiReplyResult> {
+  const { model, contents, config } = buildGenerateParams(params);
+  const ai = getGeminiClient();
 
   const startedAt = Date.now();
   const timeoutMs = 90000;
@@ -131,31 +175,85 @@ export async function generateGeminiReply(params: {
       },
     };
   } catch (err: unknown) {
-    if (err instanceof GeminiServiceError) {
-      throw err;
+    throw mapGeminiError(err, model);
+  }
+}
+
+export async function generateGeminiReplyStream(
+  params: {
+    model: string;
+    systemInstruction: string;
+    history: PlaygroundTurn[];
+    userMessage: string;
+    temperature: number;
+    maxOutputTokens: number;
+  },
+  onChunk: (delta: string) => void
+): Promise<GeminiReplyResult> {
+  const { model, contents, config } = buildGenerateParams(params);
+  const ai = getGeminiClient();
+
+  const startedAt = Date.now();
+  const timeoutMs = 90000;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    const streamPromise = ai.models.generateContentStream({
+      model,
+      contents,
+      config,
+    });
+
+    const stream = await Promise.race([
+      streamPromise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new GeminiServiceError(504, 'Gemini API stream timed out after 90 seconds.')),
+          timeoutMs
+        );
+      }),
+    ]);
+
+    let fullText = '';
+    let promptTokens = 0;
+    let outputTokens = 0;
+    let totalTokens = 0;
+
+    for await (const chunk of stream) {
+      if (Date.now() - startedAt > timeoutMs) {
+        throw new GeminiServiceError(504, 'Gemini API stream timed out after 90 seconds.');
+      }
+      const delta = chunk.text ?? '';
+      if (delta) {
+        fullText += delta;
+        onChunk(delta);
+      }
+      if (chunk.usageMetadata) {
+        promptTokens = Number(chunk.usageMetadata.promptTokenCount ?? promptTokens);
+        outputTokens = Number(chunk.usageMetadata.candidatesTokenCount ?? outputTokens);
+        totalTokens = Number(chunk.usageMetadata.totalTokenCount ?? promptTokens + outputTokens);
+      }
     }
 
-    const status = Number((err as { status?: number })?.status || 0);
-    const rawMsg = err instanceof Error ? err.message : 'Unknown Gemini API error';
-    console.error('[GeminiService Error]', status || 'ERR', rawMsg.slice(0, 200));
-
-    if (status === 429 || /RESOURCE_EXHAUSTED|quota|rate limit/i.test(rawMsg)) {
-      throw new GeminiServiceError(
-        429,
-        'Gemini API rate limit or quota reached. Wait a moment or check your billing tier in Settings > Secrets.'
-      );
-    }
-    if (status === 401 || status === 403 || /API_KEY_INVALID|PERMISSION_DENIED/i.test(rawMsg)) {
-      throw new GeminiServiceError(
-        403,
-        'Gemini API key was rejected or lacks permission for this model. Verify GEMINI_API_KEY in Settings > Secrets.'
-      );
-    }
-    if (status === 404 || /NOT_FOUND/i.test(rawMsg)) {
-      throw new GeminiServiceError(400, `Model "${model}" was not found or is unavailable for your key.`);
+    const reply = fullText.trim();
+    if (!reply) {
+      throw new GeminiServiceError(502, 'Gemini returned an empty response. Try adjusting system instructions.');
     }
 
-    throw new GeminiServiceError(502, 'Unable to reach Gemini API right now. Please try again.');
+    return {
+      reply,
+      model,
+      responseTimeMs: Date.now() - startedAt,
+      usage: {
+        promptTokens,
+        outputTokens,
+        totalTokens: totalTokens || promptTokens + outputTokens,
+      },
+    };
+  } catch (err: unknown) {
+    throw mapGeminiError(err, model);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

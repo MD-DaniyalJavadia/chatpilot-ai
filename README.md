@@ -32,6 +32,9 @@ Configure secrets in your host environment (or **Settings > Secrets** in AI Stud
 - `JWT_ACCESS_SECRET` *(ASP.NET Core)*: Symmetric HMAC-SHA256 signing key (the Node preview generates a secure ephemeral secret automatically when unset).
 - `SQLSERVER_CONNECTION_STRING` *(ASP.NET Core)*: Target Microsoft SQL Server connection string.
 - `STRIPE_SECRET_KEY` *(optional)*: Server-side Stripe secret key when enabling live Stripe PaymentIntents in Subscription checkout.
+- `ENABLE_SANDBOX_BILLING` *(optional)*: Set to `true` only if intentionally keeping simulated `SandboxCard` test billing enabled when `NODE_ENV=production`. Defaults to disabled in production.
+
+See `PRODUCTION_READINESS_REPORT.md` and `walkthrough.md` for the full pre-launch verification audit and remaining commercial launch steps.
 
 ## Phase 2, 3 & 4 API Endpoints
 
@@ -49,7 +52,7 @@ Configure secrets in your host environment (or **Settings > Secrets** in AI Stud
 - `GET /widget.js` — Standalone Vanilla JS Shadow DOM embed script (`data-chatbot-id="<publicId>"`)
 - `GET /api/v1/widget/:publicId/config` — Public branding & welcome configuration (CORS-enforced via `AllowedDomains`)
 - `GET /api/v1/widget/:publicId/history` — Restore recent visitor session turns
-- `POST /api/v1/widget/:publicId/chat` — Rate-limited, quota-checked, RAG-grounded live chat persisting `Conversations`, `Messages`, and `UsageLogs`
+- `POST /api/v1/widget/:publicId/chat` — Rate-limited, quota-checked, RAG-grounded live chat (JSON & SSE streaming) persisting `Conversations`, `Messages`, and `UsageLogs`
 
 ### Conversations, Analytics, Usage & Super Admin Monitoring
 - `GET /api/v1/conversations`, `GET /api/v1/conversations/:id`, `PATCH /api/v1/conversations/:id/resolve`, `GET /api/v1/conversations/export` — Tenant-isolated transcript search, resolve/reopen, and formula-safe CSV export
@@ -61,7 +64,7 @@ Configure secrets in your host environment (or **Settings > Secrets** in AI Stud
 - `GET /api/v1/subscription`, `POST /api/v1/subscription/checkout`, `POST /api/v1/subscription/cancel` — Tenant billing summary, modular checkout, and cancellation
 - `GET/PATCH /api/v1/admin/subscriptions*`, `GET/PATCH /api/v1/admin/payments*` — Super Admin subscription & payment reconciliation
 - `GET/POST /api/v1/tickets`, `GET/POST /api/v1/tickets/:id*`, `GET/PATCH /api/v1/admin/tickets*` — Tenant-isolated support ticket threads and admin escalation queue
-- `GET/PUT /api/v1/admin/settings`, `GET/PUT/PATCH /api/v1/admin/ai-providers*` — Global registration/rate-limit settings and AI model catalog management
+- `GET/PUT /api/v1/admin/settings`, `POST /api/v1/admin/settings/purge-expired`, `GET/PUT/PATCH /api/v1/admin/ai-providers*` — Global registration/maintenance/rate-limit/retention settings and AI model catalog management
 
 ## Running & Testing Locally
 

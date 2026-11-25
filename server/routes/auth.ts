@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { Router } from 'express';
 import { config } from '../config.ts';
-import { db, writeAuditLog } from '../db.ts';
+import { db, getSystemSettings, writeAuditLog } from '../db.ts';
 import {
   authenticate,
   getUserAuthContextById,
@@ -65,20 +65,17 @@ function issueSession(userId: number, ipAddress: string | undefined) {
 }
 
 router.get('/bootstrap-status', (_req, res) => {
-  const regSetting = db
-    .prepare(`SELECT SettingValue FROM SystemSettings WHERE SettingKey = 'AllowPublicRegistration'`)
-    .get() as { SettingValue: string } | undefined;
-  const maintSetting = db
-    .prepare(`SELECT SettingValue FROM SystemSettings WHERE SettingKey = 'MaintenanceMode'`)
-    .get() as { SettingValue: string } | undefined;
+  const settings = getSystemSettings();
 
   res.json({
     success: true,
     data: {
       superAdminClaimed: isSuperAdminClaimed(),
       requiresPasscode: Boolean(config.superAdminPasscode),
-      allowPublicRegistration: (regSetting?.SettingValue ?? 'true') !== 'false',
-      maintenanceMode: maintSetting?.SettingValue === 'true',
+      allowPublicRegistration: settings.allowPublicRegistration,
+      maintenanceMode: settings.maintenanceMode,
+      supportContactEmail: settings.supportContactEmail,
+      defaultTrialDays: settings.defaultTrialDays,
     },
   });
 });

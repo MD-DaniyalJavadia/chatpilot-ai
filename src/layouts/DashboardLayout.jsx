@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import {
+  Alert,
   AppBar,
   Box,
   Divider,
@@ -88,7 +89,7 @@ const BUSINESS_NAV = [
 ];
 
 export function DashboardLayout({ children }) {
-  const { user, logout } = useAuth();
+  const { user, logout, bootstrapStatus } = useAuth();
   const { mode, toggleMode } = useThemeMode();
   const location = useLocation();
   const navigate = useNavigate();
@@ -329,6 +330,12 @@ export function DashboardLayout({ children }) {
         </AppBar>
 
         <Box component="main" sx={{ flex: 1, p: { xs: 2, sm: 3, md: 4 }, maxWidth: 1440, width: '100%' }}>
+          {bootstrapStatus?.maintenanceMode ? (
+            <Alert severity="warning" sx={{ mb: 2.5 }}>
+              Scheduled platform maintenance is active. Some background services may experience brief interruptions
+              {bootstrapStatus.supportContactEmail ? ` — contact ${bootstrapStatus.supportContactEmail} for urgent assistance.` : '.'}
+            </Alert>
+          ) : null}
           {children}
         </Box>
       </Box>

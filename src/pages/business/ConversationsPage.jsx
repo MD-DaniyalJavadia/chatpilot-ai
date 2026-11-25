@@ -238,7 +238,7 @@ export function ConversationsPage() {
               setDateFrom(e.target.value);
             }}
             slotProps={{ inputLabel: { shrink: true } }}
-            sx={{ width: 155 }}
+            sx={{ width: { xs: '100%', md: 155 } }}
           />
           <TextField
             size="small"
@@ -250,7 +250,7 @@ export function ConversationsPage() {
               setDateTo(e.target.value);
             }}
             slotProps={{ inputLabel: { shrink: true } }}
-            sx={{ width: 155 }}
+            sx={{ width: { xs: '100%', md: 155 } }}
           />
         </Stack>
 

@@ -1,11 +1,12 @@
 import crypto from 'node:crypto';
 import { Router, type Request, type Response, type NextFunction } from 'express';
-import { db } from '../db.ts';
+import { db, getSystemSettings } from '../db.ts';
 import { createRateLimiter } from '../middleware/rateLimit.ts';
 import { evaluateWidgetOrigin } from '../services/domainAllowlistService.ts';
 import {
   GeminiServiceError,
   generateGeminiReply,
+  generateGeminiReplyStream,
   type PlaygroundTurn,
 } from '../services/geminiService.ts';
 import { buildComposedInstruction, detectUnansweredReply } from '../services/promptBuilder.ts';
@@ -16,7 +17,7 @@ import {
 } from '../services/ragService.ts';
 
 const router = Router();
-const widgetChatLimiter = createRateLimiter(30, 60 * 1000);
+const widgetChatLimiter = createRateLimiter(() => getSystemSettings().defaultWidgetRateLimitPerMin, 60 * 1000);
 const SESSION_ID_REGEX = /^[a-zA-Z0-9_-]{8,128}$/;
 
 interface PublicWidgetBotRow {
@@ -269,7 +270,9 @@ router.post(
             SELECT sp.MaxMonthlyMessages
             FROM Subscriptions s
             JOIN SubscriptionPlans sp ON sp.PlanId = s.PlanId
-            WHERE s.BusinessId = ? AND s.Status = 'Active'
+            WHERE s.BusinessId = ?
+              AND s.Status = 'Active'
+              AND (s.ExpiresOn IS NULL OR s.ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
             ORDER BY s.SubscriptionId DESC
             LIMIT 1
           ), 250) AS maxMonthlyMessages,
@@ -321,39 +324,15 @@ router.post(
     }
 
     const indexedChunksAvailable = getIndexedChunkCountForChatbot(bot.chatbotId, bot.businessId);
+    const wantsStream =
+      req.body?.stream === true ||
+      req.query.stream === '1' ||
+      (typeof req.headers.accept === 'string' && req.headers.accept.includes('text/event-stream'));
 
-    try {
-      let retrievedChunks: RetrievedChunk[] = [];
-      if (indexedChunksAvailable > 0) {
-        retrievedChunks = await retrieveRelevantChunks({
-          chatbotId: bot.chatbotId,
-          businessId: bot.businessId,
-          query: message,
-          topK: 5,
-          minScore: 0.28,
-        });
-      }
-
-      const composedInstruction = buildComposedInstruction(
-        bot,
-        bot.systemInstructions || '',
-        bot.maxOutputTokens,
-        retrievedChunks
-      );
-
-      const result = await generateGeminiReply({
-        model: bot.aiModel,
-        systemInstruction: composedInstruction,
-        history,
-        userMessage: message,
-        temperature: bot.temperature,
-        maxOutputTokens: bot.maxOutputTokens,
-      });
-
-      const isUnanswered = detectUnansweredReply(result.reply, bot.fallbackMessage);
-
-      // Persist Conversation, User + Assistant Messages, and UsageLog atomically
+    const persistTurn = (replyText: string, totalTokens: number, modelName: string) => {
+      const isUnanswered = detectUnansweredReply(replyText, bot.fallbackMessage);
       let conversationId = existingConv?.conversationId ?? 0;
+
       db.exec('BEGIN');
       try {
         if (!conversationId) {
@@ -382,21 +361,88 @@ router.post(
           conversationId,
           bot.businessId,
           'Assistant',
-          result.reply,
-          result.usage.totalTokens,
+          replyText,
+          totalTokens,
           isUnanswered ? 1 : 0
         );
 
         db.prepare(
           `INSERT INTO UsageLogs (BusinessId, ChatbotId, TokensUsed, MessageCount, ModelName)
            VALUES (?, ?, ?, 1, ?)`
-        ).run(bot.businessId, bot.chatbotId, result.usage.totalTokens, result.model);
+        ).run(bot.businessId, bot.chatbotId, totalTokens, modelName);
 
         db.exec('COMMIT');
       } catch (dbErr) {
         db.exec('ROLLBACK');
         throw dbErr;
       }
+
+      return { conversationId, isUnanswered };
+    };
+
+    let streamStarted = false;
+    const sendSse = (event: string, data: unknown) => {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    try {
+      let retrievedChunks: RetrievedChunk[] = [];
+      if (indexedChunksAvailable > 0) {
+        retrievedChunks = await retrieveRelevantChunks({
+          chatbotId: bot.chatbotId,
+          businessId: bot.businessId,
+          query: message,
+          topK: 5,
+          minScore: 0.28,
+        });
+      }
+
+      const composedInstruction = buildComposedInstruction(
+        bot,
+        bot.systemInstructions || '',
+        bot.maxOutputTokens,
+        retrievedChunks
+      );
+
+      let result;
+      if (wantsStream) {
+        res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('X-Accel-Buffering', 'no');
+        res.flushHeaders?.();
+        streamStarted = true;
+        sendSse('meta', { sessionId });
+
+        result = await generateGeminiReplyStream(
+          {
+            model: bot.aiModel,
+            systemInstruction: composedInstruction,
+            history,
+            userMessage: message,
+            temperature: bot.temperature,
+            maxOutputTokens: bot.maxOutputTokens,
+          },
+          (delta) => {
+            sendSse('chunk', { delta });
+          }
+        );
+      } else {
+        result = await generateGeminiReply({
+          model: bot.aiModel,
+          systemInstruction: composedInstruction,
+          history,
+          userMessage: message,
+          temperature: bot.temperature,
+          maxOutputTokens: bot.maxOutputTokens,
+        });
+      }
+
+      const { conversationId, isUnanswered } = persistTurn(
+        result.reply,
+        result.usage.totalTokens,
+        result.model
+      );
 
       const citations = bot.showCitations
         ? retrievedChunks.map((c) => ({
@@ -411,28 +457,37 @@ router.post(
         Boolean(bot.humanHandoverEmail) &&
         (isUnanswered || /human|agent|support|representative|person/i.test(message));
 
-      res.json({
-        success: true,
-        data: {
-          sessionId,
-          conversationId,
-          reply: result.reply,
-          responseTimeMs: result.responseTimeMs,
-          citations,
-          handoverOffered,
-          humanHandoverEmail: handoverOffered ? bot.humanHandoverEmail : null,
-        },
-      });
-    } catch (err: unknown) {
-      if (err instanceof GeminiServiceError) {
-        res.status(err.statusCode).json({ success: false, message: err.message });
-        return;
+      const payload = {
+        sessionId,
+        conversationId,
+        reply: result.reply,
+        responseTimeMs: result.responseTimeMs,
+        citations,
+        handoverOffered,
+        humanHandoverEmail: handoverOffered ? bot.humanHandoverEmail : null,
+      };
+
+      if (streamStarted) {
+        sendSse('done', payload);
+        res.end();
+      } else {
+        res.json({ success: true, data: payload });
       }
-      console.error('[Widget Chat Error]', err);
-      res.status(500).json({
-        success: false,
-        message: 'Unable to generate an assistant response right now. Please try again.',
-      });
+    } catch (err: unknown) {
+      const status = err instanceof GeminiServiceError ? err.statusCode : 500;
+      const errMsg =
+        err instanceof GeminiServiceError
+          ? err.message
+          : 'Unable to generate an assistant response right now. Please try again.';
+      if (!(err instanceof GeminiServiceError)) {
+        console.error('[Widget Chat Error]', err);
+      }
+      if (streamStarted) {
+        sendSse('error', { message: errMsg });
+        res.end();
+      } else {
+        res.status(status).json({ success: false, message: errMsg });
+      }
     }
   }
 );

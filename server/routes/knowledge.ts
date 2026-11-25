@@ -411,9 +411,13 @@ router.post(
       .prepare(
         `SELECT COALESCE(sp.AllowWebsiteIngestion, 0) AS allowMultiCrawl, COALESCE(sp.Name, 'Free') AS planName
          FROM Businesses b
-         LEFT JOIN Subscriptions s ON s.BusinessId = b.BusinessId AND s.Status = 'Active'
+         LEFT JOIN Subscriptions s ON s.BusinessId = b.BusinessId
+           AND s.Status = 'Active'
+           AND (s.ExpiresOn IS NULL OR s.ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
          LEFT JOIN SubscriptionPlans sp ON sp.PlanId = s.PlanId
-         WHERE b.BusinessId = ?`
+         WHERE b.BusinessId = ?
+         ORDER BY s.SubscriptionId DESC
+         LIMIT 1`
       )
       .get(businessId) as { allowMultiCrawl: number; planName: string } | undefined;
 

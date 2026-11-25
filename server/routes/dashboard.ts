@@ -15,8 +15,8 @@ router.get('/super-admin', authenticate, requireRoles('SuperAdmin'), (_req, res)
         (SELECT COUNT(*) FROM Messages) AS totalMessages,
         (SELECT COALESCE(SUM(TokensUsed), 0) FROM UsageLogs) AS totalAiTokensUsed,
         (SELECT COALESCE(SUM(AmountUsd), 0) FROM Payments WHERE Status = 'Succeeded') AS monthlyRevenueUsd,
-        (SELECT COUNT(*) FROM Subscriptions WHERE Status = 'Active') AS activeSubscriptions,
-        (SELECT COUNT(*) FROM Subscriptions WHERE Status = 'Expired') AS expiredSubscriptions`
+        (SELECT COUNT(*) FROM Subscriptions WHERE Status = 'Active' AND (ExpiresOn IS NULL OR ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now'))) AS activeSubscriptions,
+        (SELECT COUNT(*) FROM Subscriptions WHERE Status = 'Expired' OR (Status = 'Active' AND ExpiresOn IS NOT NULL AND ExpiresOn <= strftime('%Y-%m-%dT%H:%M:%fZ','now'))) AS expiredSubscriptions`
     )
     .get();
 
@@ -28,11 +28,18 @@ router.get('/super-admin', authenticate, requireRoles('SuperAdmin'), (_req, res)
         b.Industry AS industry,
         b.Status AS status,
         b.CreatedOn AS createdOn,
-        sp.Name AS planName,
+        COALESCE((
+          SELECT sp.Name
+          FROM Subscriptions s
+          JOIN SubscriptionPlans sp ON sp.PlanId = s.PlanId
+          WHERE s.BusinessId = b.BusinessId
+            AND s.Status = 'Active'
+            AND (s.ExpiresOn IS NULL OR s.ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ORDER BY s.SubscriptionId DESC
+          LIMIT 1
+        ), 'Free') AS planName,
         (SELECT COUNT(*) FROM BusinessUsers bu WHERE bu.BusinessId = b.BusinessId) AS memberCount
       FROM Businesses b
-      LEFT JOIN Subscriptions s ON s.BusinessId = b.BusinessId AND s.Status = 'Active'
-      LEFT JOIN SubscriptionPlans sp ON sp.PlanId = s.PlanId
       ORDER BY b.CreatedOn DESC
       LIMIT 6`
     )
@@ -44,7 +51,9 @@ router.get('/super-admin', authenticate, requireRoles('SuperAdmin'), (_req, res)
         sp.Name AS planName,
         COUNT(s.SubscriptionId) AS tenantCount
       FROM SubscriptionPlans sp
-      LEFT JOIN Subscriptions s ON s.PlanId = sp.PlanId AND s.Status = 'Active'
+      LEFT JOIN Subscriptions s ON s.PlanId = sp.PlanId
+        AND s.Status = 'Active'
+        AND (s.ExpiresOn IS NULL OR s.ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
       GROUP BY sp.PlanId, sp.Name
       ORDER BY sp.MonthlyPriceUsd ASC`
     )
@@ -111,9 +120,13 @@ router.get(
           (SELECT COUNT(*) FROM Messages WHERE BusinessId = b.BusinessId) AS messageCount,
           (SELECT COALESCE(SUM(TokensUsed), 0) FROM UsageLogs WHERE BusinessId = b.BusinessId) AS tokensUsed
         FROM Businesses b
-        LEFT JOIN Subscriptions s ON s.BusinessId = b.BusinessId AND s.Status = 'Active'
+        LEFT JOIN Subscriptions s ON s.BusinessId = b.BusinessId
+          AND s.Status = 'Active'
+          AND (s.ExpiresOn IS NULL OR s.ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
         LEFT JOIN SubscriptionPlans sp ON sp.PlanId = s.PlanId
-        WHERE b.BusinessId = ?`
+        WHERE b.BusinessId = ?
+        ORDER BY s.SubscriptionId DESC
+        LIMIT 1`
       )
       .get(businessId);
 

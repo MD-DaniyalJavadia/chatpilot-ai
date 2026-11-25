@@ -316,7 +316,12 @@ export function ChatbotConfigPage() {
                     fullWidth
                     value={watch('aiProvider')}
                     onChange={(e) => {
-                      setValue('aiProvider', e.target.value, { shouldValidate: true });
+                      const nextProviderCode = e.target.value;
+                      setValue('aiProvider', nextProviderCode, { shouldValidate: true });
+                      const nextProvider = providers.find((p) => p.code === nextProviderCode);
+                      if (nextProvider?.models?.[0]?.id) {
+                        setValue('aiModel', nextProvider.models[0].id, { shouldValidate: true });
+                      }
                     }}
                     error={Boolean(errors.aiProvider)}
                     helperText={errors.aiProvider?.message}

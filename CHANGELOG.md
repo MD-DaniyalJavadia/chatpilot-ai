@@ -2,6 +2,43 @@
 
 All notable changes to **ChatPilot AI** are documented in this file.
 
+## [1.0.2] - 2026-11-25 — Production Readiness Audit & Security/Billing Hardening
+
+### Added
+- **Audit Deliverables (`/PRODUCTION_READINESS_REPORT.md`, `/walkthrough.md`)**: Documented module verification status, remediated vulnerabilities with step-by-step verification traces, testing metrics, required external secrets, and pre-launch checklist.
+- **Database Lock Resilience (`/server/db.ts`)**: Configured `PRAGMA busy_timeout = 5000;` alongside WAL mode and strict foreign keys.
+- **HTTP Hardening Headers & Limiter Pruning (`/server.ts`, `/server/middleware/rateLimit.ts`)**: Disabled `x-powered-by`, added `X-Content-Type-Options: nosniff`, `Referrer-Policy`, and `Permissions-Policy`, and added periodic/threshold pruning of expired rate-limit buckets.
+
+### Fixed
+- **SSRF IPv6 & Bracket Defense (`/server/services/websiteCrawlerService.ts`)**: Stripped brackets from IPv6 hostnames and implemented full 16-bit IPv6 block parsing blocking loopback, ULA, link-local, multicast, documentation, IPv4-compatible, IPv4-mapped, and NAT64 internal targets.
+- **Widget Domain Allowlist & Handover Safety (`/server/services/domainAllowlistService.ts`, `/server/widgetScript.ts`)**: Blocked headerless (`Origin`/`Referer` absent) requests when domain allowlist rules exist for a chatbot, validated email syntax before rendering `mailto:` handover links, and added `100dvh` mobile height fallback.
+- **Billing Integrity & Entitlement Enforcement (`/server/routes/billing.ts`, `/server/services/paymentGatewayService.ts`, `/server/routes/*.ts`, `/src/pages/business/BusinessSubscriptionPage.jsx`)**:
+  - Disabled paid `SandboxCard` checkout in production unless `ENABLE_SANDBOX_BILLING=true`, and rejected invalid gateway provider names.
+  - Isolated pending checkouts (`ManualInvoice` / unconfirmed Stripe intents) in `PastDue` status without cancelling the existing `Active` plan until settled via `PATCH /api/v1/admin/payments/:id/status`.
+  - Enforced `(ExpiresOn IS NULL OR ExpiresOn > now)` across all quota, billing, chatbot, crawler, widget, analytics, dashboard, and admin queries.
+- **Session Revocation & JWT Header Checks (`/server/utils/crypto.ts`, `/server/routes/users.ts`, `/server/routes/businesses.ts`)**: Explicitly verified `alg=HS256`, `typ=JWT`, and positive integer `sub`; revoked open `RefreshTokens` atomically on password changes, user deactivation, and business suspension/deactivation.
+- **Frontend UX & Cleanup (`/src/`)**: Auto-reset `aiModel` on provider change in `ChatbotConfigPage.jsx`, improved mobile layout responsiveness in `ConversationsPage.jsx` and `WidgetIntegrationPage.jsx`, surfaced pending invoice banners in `BusinessSubscriptionPage.jsx`, and removed dead `PhasePlaceholderPage.jsx`.
+
+## [1.0.1] - 2026-11-25 — Phase 4 SSE Streaming & Phase 6 Live Settings/Provider Enforcement
+
+### Added
+- **Streaming Widget Chat (`/server/services/geminiService.ts`, `/server/routes/widget.ts`, `/server/widgetScript.ts`)**:
+  - Added `generateGeminiReplyStream()` using `@google/genai` `models.generateContentStream(...)` with automatic model validation and error mapping.
+  - Added Server-Sent Events (`event: meta`, `event: chunk`, `event: done`, `event: error`) streaming to `POST /api/v1/widget/:publicId/chat` when `stream: true`, `?stream=1`, or `Accept: text/event-stream` is requested, preserving standard JSON responses for non-streaming clients.
+  - Updated `/widget.js` Shadow DOM chat widget to stream assistant tokens incrementally into the chat bubble with seamless JSON fallback.
+- **Conversation Retention Purge (`/server/db.ts`, `/server/routes/settings.ts`, `/src/pages/admin/AdminSystemSettingsPage.jsx`)**:
+  - Implemented `purgeExpiredConversations()` driven by `SystemSettings.ConversationRetentionDays`, invoked on database startup and on demand via `POST /api/v1/admin/settings/purge-expired` with audit logging (`ConversationsRetentionPurged`).
+
+### Changed
+- **Live System Settings Enforcement (`/server/`)**:
+  - Added `getSystemSettings()` in `server/db.ts` and dynamic rate-limit evaluation in `server/middleware/rateLimit.ts`, wiring `DefaultWidgetRateLimitPerMin` directly into `widgetChatLimiter`.
+  - Extended `GET /api/v1/auth/bootstrap-status` to expose `allowPublicRegistration`, `maintenanceMode`, `supportContactEmail`, and `defaultTrialDays`.
+- **Live AI Provider & Model Validation (`/server/routes/chatbots.ts`)**:
+  - Replaced hardcoded model/provider lists with `validateActiveProviderAndModel()` checking `AIProviders.IsActive` and `AIProviders.SupportedModelsJson` on chatbot create/update and playground requests.
+- **Maintenance, Registration & Support UX (`/src/`)**:
+  - Surfaced platform `maintenanceMode` banners across `DashboardLayout.jsx`, `LoginPage.jsx`, and `RegisterPage.jsx`, registration-closed notices in `RegisterPage.jsx`, dynamic `supportContactEmail` in `BusinessSupportPage.jsx`, and live bootstrap refresh on settings save in `AdminSystemSettingsPage.jsx`.
+- **Documentation Sync**: Updated `ARCHITECTURE.md`, `PROJECT_STATUS.md`, and `CHANGELOG.md` to reflect complete Phase 1–6 modules and live runtime behavior.
+
 ## [1.0.0] - 2026-11-24 — Phase 6: Commercial Billing, Support Tickets, System Settings & AI Provider Config
 
 ### Added

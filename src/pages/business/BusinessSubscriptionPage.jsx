@@ -54,6 +54,11 @@ export function BusinessSubscriptionPage() {
     try {
       const res = await billingService.getBusinessSubscription();
       setData(res);
+      if (res && res.sandboxBillingEnabled === false) {
+        setPaymentProvider((prev) =>
+          prev === 'SandboxCard' ? (res.stripeConfigured ? 'Stripe' : 'ManualInvoice') : prev
+        );
+      }
     } catch (err) {
       setError(extractApiError(err, 'Unable to load subscription and billing details.'));
     } finally {
@@ -69,6 +74,8 @@ export function BusinessSubscriptionPage() {
   const plans = data?.plans || [];
   const payments = data?.payments || [];
   const stripeConfigured = Boolean(data?.stripeConfigured);
+  const sandboxBillingEnabled = Boolean(data?.sandboxBillingEnabled);
+  const pendingPayment = payments.find((p) => p.status === 'Pending');
 
   const handleConfirmCheckout = async () => {
     if (!checkoutPlan) return;
@@ -137,6 +144,13 @@ export function BusinessSubscriptionPage() {
 
       {error ? <Alert severity="error">{error}</Alert> : null}
       {success ? <Alert severity="success">{success}</Alert> : null}
+      {pendingPayment ? (
+        <Alert severity="info">
+          Payment <strong>{pendingPayment.externalTxnId || `#${pendingPayment.paymentId}`}</strong> for{' '}
+          <strong>{pendingPayment.planName}</strong> ({formatCurrency(pendingPayment.amountUsd)}) is pending
+          settlement. Your current active plan limits remain in effect until payment is settled.
+        </Alert>
+      ) : null}
 
       {/* Current Subscription Summary */}
       <Box
@@ -366,7 +380,9 @@ export function BusinessSubscriptionPage() {
             onChange={(e) => setPaymentProvider(e.target.value)}
             fullWidth
           >
-            <MenuItem value="SandboxCard">Instant Card Settlement (Sandbox)</MenuItem>
+            {sandboxBillingEnabled ? (
+              <MenuItem value="SandboxCard">Instant Card Settlement (Sandbox)</MenuItem>
+            ) : null}
             <MenuItem value="ManualInvoice">Manual Invoice (Net Terms)</MenuItem>
             {stripeConfigured ? <MenuItem value="Stripe">Stripe PaymentIntent</MenuItem> : null}
           </TextField>
@@ -376,7 +392,15 @@ export function BusinessSubscriptionPage() {
             Cancel
           </Button>
           <Button onClick={handleConfirmCheckout} disabled={processing} variant="contained">
-            {processing ? 'Processing...' : 'Confirm & Activate'}
+            {processing
+              ? 'Processing...'
+              : (billingCycle === 'Yearly' ? checkoutPlan?.yearlyPriceUsd : checkoutPlan?.monthlyPriceUsd) === 0
+                ? 'Confirm & Switch'
+                : paymentProvider === 'ManualInvoice'
+                  ? 'Issue Invoice'
+                  : paymentProvider === 'Stripe'
+                    ? 'Start Stripe Checkout'
+                    : 'Confirm & Activate'}
           </Button>
         </DialogActions>
       </Dialog>

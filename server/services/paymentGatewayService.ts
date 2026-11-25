@@ -28,6 +28,9 @@ class SandboxCardGateway implements IPaymentGateway {
   readonly providerName: PaymentProviderName = 'SandboxCard';
 
   async processSubscriptionCharge(input: CheckoutChargeInput): Promise<CheckoutChargeResult> {
+    if (input.amountUsd > 0 && !isSandboxBillingEnabled()) {
+      throw new Error('Sandbox card checkout is disabled in production mode.');
+    }
     const ref = `ch_sbx_${crypto.randomBytes(8).toString('hex')}`;
     return {
       provider: 'SandboxCard',
@@ -121,6 +124,10 @@ const gateways: Record<PaymentProviderName, IPaymentGateway> = {
 
 export function isStripeConfigured(): boolean {
   return Boolean(process.env.STRIPE_SECRET_KEY?.trim());
+}
+
+export function isSandboxBillingEnabled(): boolean {
+  return process.env.NODE_ENV !== 'production' || process.env.ENABLE_SANDBOX_BILLING === 'true';
 }
 
 export async function executeSubscriptionCheckout(

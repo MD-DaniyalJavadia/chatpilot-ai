@@ -22,10 +22,11 @@ import { extractApiError } from '../../utils/formatters';
 import { registerSchema } from '../../validations/authSchemas';
 
 export function RegisterPage() {
-  const { register: registerBusiness } = useAuth();
+  const { register: registerBusiness, bootstrapStatus } = useAuth();
   const navigate = useNavigate();
   const [showPassword, setShowPassword] = useState(false);
   const [serverError, setServerError] = useState('');
+  const registrationClosed = bootstrapStatus?.loaded && bootstrapStatus?.allowPublicRegistration === false;
 
   const {
     register,
@@ -69,6 +70,20 @@ export function RegisterPage() {
       <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
         Start on the Free tier with isolated tenant storage and role-based team controls.
       </Typography>
+
+      {bootstrapStatus?.maintenanceMode ? (
+        <Alert severity="warning" sx={{ mb: 2.5 }}>
+          Platform maintenance notice is active.
+          {bootstrapStatus.supportContactEmail ? ` Contact ${bootstrapStatus.supportContactEmail} for support.` : ''}
+        </Alert>
+      ) : null}
+
+      {registrationClosed ? (
+        <Alert severity="info" sx={{ mb: 2.5 }}>
+          Public self-service registration is currently paused by platform administrators.
+          {bootstrapStatus.supportContactEmail ? ` Contact ${bootstrapStatus.supportContactEmail} for onboarding.` : ''}
+        </Alert>
+      ) : null}
 
       {serverError ? (
         <Alert severity="error" sx={{ mb: 2.5 }}>
@@ -155,7 +170,13 @@ export function RegisterPage() {
             helperText={errors.confirmPassword?.message}
           />
 
-          <Button type="submit" variant="contained" size="large" fullWidth disabled={isSubmitting}>
+          <Button
+            type="submit"
+            variant="contained"
+            size="large"
+            fullWidth
+            disabled={isSubmitting || registrationClosed}
+          >
             {isSubmitting ? 'Creating workspace...' : 'Create Business Account'}
           </Button>
         </Stack>

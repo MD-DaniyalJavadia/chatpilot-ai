@@ -89,8 +89,23 @@ router.patch('/:id/status', authenticate, requireRoles('SuperAdmin'), (req: Auth
     return;
   }
 
-  db.prepare(`UPDATE Users SET IsActive = ?, UpdatedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE UserId = ?`)
-    .run(isActive ? 1 : 0, targetUserId);
+  db.exec('BEGIN');
+  try {
+    db.prepare(`UPDATE Users SET IsActive = ?, UpdatedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE UserId = ?`)
+      .run(isActive ? 1 : 0, targetUserId);
+    if (!isActive) {
+      db.prepare(
+        `UPDATE RefreshTokens
+         SET RevokedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+             UpdatedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE UserId = ? AND RevokedOn IS NULL`
+      ).run(targetUserId);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 
   writeAuditLog({
     userId: req.user?.userId,
@@ -148,8 +163,21 @@ router.put('/me/password', authenticate, (req: AuthenticatedRequest, res) => {
   }
 
   const newHash = hashPassword(newPassword);
-  db.prepare(`UPDATE Users SET PasswordHash = ?, UpdatedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE UserId = ?`)
-    .run(newHash, req.user!.userId);
+  db.exec('BEGIN');
+  try {
+    db.prepare(`UPDATE Users SET PasswordHash = ?, UpdatedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE UserId = ?`)
+      .run(newHash, req.user!.userId);
+    db.prepare(
+      `UPDATE RefreshTokens
+       SET RevokedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+           UpdatedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+       WHERE UserId = ? AND RevokedOn IS NULL`
+    ).run(req.user!.userId);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 
   writeAuditLog({
     userId: req.user!.userId,

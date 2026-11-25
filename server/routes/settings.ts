@@ -1,41 +1,16 @@
 import { Router } from 'express';
-import { db, writeAuditLog } from '../db.ts';
+import { db, getSystemSettings, purgeExpiredConversations, writeAuditLog } from '../db.ts';
 import { authenticate, requireRoles, type AuthenticatedRequest } from '../middleware/auth.ts';
 import { isGeminiConfigured } from '../services/geminiService.ts';
 
 const router = Router();
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-interface SystemSettingsPayload {
-  allowPublicRegistration: boolean;
-  defaultTrialDays: number;
-  defaultWidgetRateLimitPerMin: number;
-  conversationRetentionDays: number;
-  maintenanceMode: boolean;
-  supportContactEmail: string;
-}
-
-function loadSystemSettingsObject(): SystemSettingsPayload {
-  const rows = db
-    .prepare(`SELECT SettingKey, SettingValue FROM SystemSettings`)
-    .all() as Array<{ SettingKey: string; SettingValue: string }>;
-
-  const map = new Map(rows.map((r) => [r.SettingKey, r.SettingValue]));
-  return {
-    allowPublicRegistration: (map.get('AllowPublicRegistration') ?? 'true') !== 'false',
-    defaultTrialDays: Math.max(0, Number(map.get('DefaultTrialDays') ?? 14) || 14),
-    defaultWidgetRateLimitPerMin: Math.max(5, Number(map.get('DefaultWidgetRateLimitPerMin') ?? 60) || 60),
-    conversationRetentionDays: Math.max(7, Number(map.get('ConversationRetentionDays') ?? 365) || 365),
-    maintenanceMode: map.get('MaintenanceMode') === 'true',
-    supportContactEmail: map.get('SupportContactEmail') ?? 'support@chatpilot.local',
-  };
-}
-
 // Super Admin: Get Platform System Settings
 router.get('/settings', authenticate, requireRoles('SuperAdmin'), (_req, res) => {
   res.json({
     success: true,
-    data: loadSystemSettingsObject(),
+    data: getSystemSettings(),
   });
 });
 
@@ -107,7 +82,26 @@ router.put('/settings', authenticate, requireRoles('SuperAdmin'), (req: Authenti
   res.json({
     success: true,
     message: 'System settings saved.',
-    data: loadSystemSettingsObject(),
+    data: getSystemSettings(),
+  });
+});
+
+// Super Admin: Enforce Conversation Retention Policy Immediately
+router.post('/settings/purge-expired', authenticate, requireRoles('SuperAdmin'), (req: AuthenticatedRequest, res) => {
+  const result = purgeExpiredConversations();
+
+  writeAuditLog({
+    userId: req.user?.userId,
+    action: 'ConversationsRetentionPurged',
+    entityType: 'SystemSettings',
+    details: `Purged ${result.deletedCount} expired conversation(s) older than ${result.retentionDays} days`,
+    ipAddress: req.ip,
+  });
+
+  res.json({
+    success: true,
+    message: `Purged ${result.deletedCount} conversation(s) older than ${result.retentionDays} days.`,
+    data: result,
   });
 });
 

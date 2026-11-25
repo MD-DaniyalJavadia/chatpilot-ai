@@ -142,7 +142,7 @@ export const WIDGET_SCRIPT_SOURCE = `(function () {
     '.cp-send { border: none; border-radius: 10px; padding: 0 14px; height: 38px; color: #ffffff; font-size: 13px; font-weight: 600; cursor: pointer; flex-shrink: 0; }',
     '.cp-send:disabled { opacity: 0.55; cursor: not-allowed; }',
     '.cp-footer { padding: 6px 12px 8px; text-align: center; font-size: 11px; color: #94a3b8; background: #ffffff; }',
-    '@media (max-width: 480px) { .cp-root { bottom: 12px; right: 12px !important; left: 12px !important; } .cp-panel { width: 100%; max-width: 100%; height: calc(100vh - 84px); } .cp-launcher { float: right; } }'
+    '@media (max-width: 480px) { .cp-root { bottom: 12px; right: 12px !important; left: 12px !important; } .cp-panel { width: 100%; max-width: 100%; height: calc(100vh - 84px); height: calc(100dvh - 84px); } .cp-launcher { float: right; } }'
   ].join('\\n');
   shadow.appendChild(styleEl);
 
@@ -306,7 +306,12 @@ export const WIDGET_SCRIPT_SOURCE = `(function () {
         row.appendChild(citeWrap);
       }
 
-      if (msg.sender === 'bot' && msg.handoverOffered && msg.humanHandoverEmail) {
+      if (
+        msg.sender === 'bot' &&
+        msg.handoverOffered &&
+        typeof msg.humanHandoverEmail === 'string' &&
+        /^[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+$/.test(msg.humanHandoverEmail)
+      ) {
         var handover = document.createElement('div');
         handover.className = 'cp-handover';
         handover.appendChild(document.createTextNode('Need a human specialist? Email '));
@@ -436,49 +441,138 @@ export const WIDGET_SCRIPT_SOURCE = `(function () {
     sendBtn.disabled = true;
     renderMessages();
 
+    var streamingIdx = -1;
+    function ensureStreamingMessage() {
+      if (streamingIdx === -1) {
+        widgetState.messages.push({
+          sender: 'bot',
+          content: '',
+          citations: [],
+          handoverOffered: false,
+          humanHandoverEmail: null
+        });
+        streamingIdx = widgetState.messages.length - 1;
+      }
+      return widgetState.messages[streamingIdx];
+    }
+
     fetch(apiBase + '/api/v1/widget/' + encodeURIComponent(publicId) + '/chat', {
       method: 'POST',
       mode: 'cors',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream, application/json'
       },
       body: JSON.stringify({
         sessionId: sessionId,
-        message: text
+        message: text,
+        stream: true
       })
     })
       .then(function (res) {
-        return res.json().then(function (payload) {
-          return { ok: res.ok, payload: payload };
-        });
-      })
-      .then(function (result) {
-        widgetState.sending = false;
-        sendBtn.disabled = false;
-
-        if (!result.ok || !result.payload || !result.payload.success) {
-          var errMsg = (result.payload && result.payload.message) || 'Failed to get response.';
-          setError(errMsg);
-          renderMessages();
-          return;
+        var contentType = (res.headers.get('content-type') || '').toLowerCase();
+        if (!res.ok || contentType.indexOf('text/event-stream') === -1 || !res.body || !res.body.getReader) {
+          return res.json().then(function (payload) {
+            widgetState.sending = false;
+            sendBtn.disabled = false;
+            if (!res.ok || !payload || !payload.success) {
+              setError((payload && payload.message) || 'Failed to get response.');
+              renderMessages();
+              return;
+            }
+            var data = payload.data;
+            if (data.sessionId) {
+              sessionId = data.sessionId;
+              try { window.localStorage.setItem(storageKey, sessionId); } catch (_e) {}
+            }
+            widgetState.messages.push({
+              sender: 'bot',
+              content: data.reply,
+              citations: data.citations || [],
+              handoverOffered: Boolean(data.handoverOffered),
+              humanHandoverEmail: data.humanHandoverEmail || null
+            });
+            renderMessages();
+          });
         }
 
-        var data = result.payload.data;
-        if (data.sessionId) {
-          sessionId = data.sessionId;
+        var reader = res.body.getReader();
+        var decoder = new TextDecoder('utf-8');
+        var buffer = '';
+
+        function handleSseBlock(block) {
+          var lines = block.split('\\n');
+          var eventName = 'message';
+          var dataLines = [];
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i].replace(/\\r$/, '');
+            if (line.indexOf('event:') === 0) {
+              eventName = line.slice(6).trim();
+            } else if (line.indexOf('data:') === 0) {
+              dataLines.push(line.slice(5).trim());
+            }
+          }
+          if (!dataLines.length) return;
+          var parsed;
           try {
-            window.localStorage.setItem(storageKey, sessionId);
-          } catch (_e) {}
+            parsed = JSON.parse(dataLines.join('\\n'));
+          } catch (_e) {
+            return;
+          }
+
+          if (eventName === 'meta' && parsed.sessionId) {
+            sessionId = parsed.sessionId;
+            try { window.localStorage.setItem(storageKey, sessionId); } catch (_e2) {}
+          } else if (eventName === 'chunk' && parsed.delta) {
+            var target = ensureStreamingMessage();
+            target.content += parsed.delta;
+            renderMessages();
+          } else if (eventName === 'done') {
+            if (parsed.sessionId) {
+              sessionId = parsed.sessionId;
+              try { window.localStorage.setItem(storageKey, sessionId); } catch (_e3) {}
+            }
+            var finalMsg = ensureStreamingMessage();
+            finalMsg.content = parsed.reply || finalMsg.content;
+            finalMsg.citations = parsed.citations || [];
+            finalMsg.handoverOffered = Boolean(parsed.handoverOffered);
+            finalMsg.humanHandoverEmail = parsed.humanHandoverEmail || null;
+            widgetState.sending = false;
+            sendBtn.disabled = false;
+            renderMessages();
+          } else if (eventName === 'error') {
+            if (streamingIdx !== -1 && !widgetState.messages[streamingIdx].content) {
+              widgetState.messages.splice(streamingIdx, 1);
+            }
+            widgetState.sending = false;
+            sendBtn.disabled = false;
+            setError(parsed.message || 'Failed to get response.');
+            renderMessages();
+          }
         }
 
-        widgetState.messages.push({
-          sender: 'bot',
-          content: data.reply,
-          citations: data.citations || [],
-          handoverOffered: Boolean(data.handoverOffered),
-          humanHandoverEmail: data.humanHandoverEmail || null
-        });
-        renderMessages();
+        function pump() {
+          return reader.read().then(function (chunkResult) {
+            if (chunkResult.done) {
+              if (buffer.trim()) handleSseBlock(buffer);
+              if (widgetState.sending) {
+                widgetState.sending = false;
+                sendBtn.disabled = false;
+                renderMessages();
+              }
+              return;
+            }
+            buffer += decoder.decode(chunkResult.value, { stream: true });
+            var parts = buffer.split('\\n\\n');
+            buffer = parts.pop() || '';
+            for (var p = 0; p < parts.length; p++) {
+              if (parts[p].trim()) handleSseBlock(parts[p]);
+            }
+            return pump();
+          });
+        }
+
+        return pump();
       })
       .catch(function () {
         widgetState.sending = false;

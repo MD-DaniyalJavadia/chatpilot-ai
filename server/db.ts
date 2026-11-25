@@ -12,6 +12,7 @@ export const db = new DatabaseSync(dbPath);
 
 db.exec('PRAGMA foreign_keys = ON;');
 db.exec('PRAGMA journal_mode = WAL;');
+db.exec('PRAGMA busy_timeout = 5000;');
 
 export function initializeDatabase(): void {
   db.exec(`
@@ -413,6 +414,51 @@ export function initializeDatabase(): void {
   insertSetting.run('ConversationRetentionDays', '365', 'Retention window in days for stored widget transcripts');
   insertSetting.run('MaintenanceMode', 'false', 'Enable maintenance notice banner across workspaces');
   insertSetting.run('SupportContactEmail', 'support@chatpilot.local', 'Platform support contact email address');
+
+  purgeExpiredConversations();
+}
+
+export interface SystemSettingsValues {
+  allowPublicRegistration: boolean;
+  defaultTrialDays: number;
+  defaultWidgetRateLimitPerMin: number;
+  conversationRetentionDays: number;
+  maintenanceMode: boolean;
+  supportContactEmail: string;
+}
+
+export function getSystemSettings(): SystemSettingsValues {
+  const rows = db
+    .prepare(`SELECT SettingKey, SettingValue FROM SystemSettings`)
+    .all() as Array<{ SettingKey: string; SettingValue: string }>;
+
+  const map = new Map(rows.map((r) => [r.SettingKey, r.SettingValue]));
+  return {
+    allowPublicRegistration: (map.get('AllowPublicRegistration') ?? 'true') !== 'false',
+    defaultTrialDays: Math.min(90, Math.max(0, Number(map.get('DefaultTrialDays') ?? 14) || 14)),
+    defaultWidgetRateLimitPerMin: Math.min(
+      1000,
+      Math.max(5, Number(map.get('DefaultWidgetRateLimitPerMin') ?? 60) || 60)
+    ),
+    conversationRetentionDays: Math.min(
+      3650,
+      Math.max(7, Number(map.get('ConversationRetentionDays') ?? 365) || 365)
+    ),
+    maintenanceMode: map.get('MaintenanceMode') === 'true',
+    supportContactEmail: map.get('SupportContactEmail') ?? 'support@chatpilot.local',
+  };
+}
+
+export function purgeExpiredConversations(): { deletedCount: number; retentionDays: number } {
+  const { conversationRetentionDays } = getSystemSettings();
+  const cutoffIso = new Date(Date.now() - conversationRetentionDays * 86400 * 1000).toISOString();
+  const res = db
+    .prepare(`DELETE FROM Conversations WHERE UpdatedOn < ?`)
+    .run(cutoffIso);
+  return {
+    deletedCount: Number(res.changes ?? 0),
+    retentionDays: conversationRetentionDays,
+  };
 }
 
 export function writeAuditLog(params: {

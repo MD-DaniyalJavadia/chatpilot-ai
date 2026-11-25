@@ -27,11 +27,13 @@ import {
 import { useForm } from 'react-hook-form';
 import { StatusText } from '../../components/common/StatusText';
 import { TicketThreadDialog } from '../../components/common/TicketThreadDialog';
+import { useAuth } from '../../hooks/useAuth';
 import { createTicketSchema } from '../../schemas/phase6Schemas';
 import { ticketsService } from '../../services/ticketsService';
 import { extractApiError, formatDateTime, formatNumber } from '../../utils/formatters';
 
 export function BusinessSupportPage() {
+  const { bootstrapStatus } = useAuth();
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -129,7 +131,8 @@ export function BusinessSupportPage() {
         <Box>
           <Typography variant="h4">Support Tickets</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-            Open a direct support escalation for billing, widget integration, or AI quality questions and track replies.
+            Open a direct support escalation for billing, widget integration, or AI quality questions and track replies
+            {bootstrapStatus?.supportContactEmail ? ` — or email ${bootstrapStatus.supportContactEmail}.` : '.'}
           </Typography>
         </Box>
 

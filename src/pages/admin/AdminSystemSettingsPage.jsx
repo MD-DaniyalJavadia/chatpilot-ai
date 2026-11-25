@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { yupResolver } from '@hookform/resolvers/yup';
+import DeleteSweepOutlinedIcon from '@mui/icons-material/DeleteSweepOutlined';
 import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
 import {
   Alert,
@@ -15,13 +16,16 @@ import {
   Typography,
 } from '@mui/material';
 import { Controller, useForm } from 'react-hook-form';
+import { useAuth } from '../../hooks/useAuth';
 import { systemSettingsSchema } from '../../schemas/phase6Schemas';
 import { platformConfigService } from '../../services/platformConfigService';
 import { extractApiError } from '../../utils/formatters';
 
 export function AdminSystemSettingsPage() {
+  const { refreshBootstrapStatus } = useAuth();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [purging, setPurging] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
@@ -63,11 +67,26 @@ export function AdminSystemSettingsPage() {
     try {
       const res = await platformConfigService.updateSystemSettings(values);
       reset(res.data);
+      await refreshBootstrapStatus();
       setSuccess('Platform system settings updated.');
     } catch (err) {
       setError(extractApiError(err, 'Unable to update system settings.'));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handlePurgeExpired = async () => {
+    setPurging(true);
+    setError('');
+    setSuccess('');
+    try {
+      const res = await platformConfigService.purgeExpiredConversations();
+      setSuccess(res.message || 'Expired conversations purged.');
+    } catch (err) {
+      setError(extractApiError(err, 'Unable to purge expired conversations.'));
+    } finally {
+      setPurging(false);
     }
   };
 
@@ -171,8 +190,18 @@ export function AdminSystemSettingsPage() {
               </Stack>
             </Box>
 
-            <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <Button type="submit" variant="contained" startIcon={<SaveOutlinedIcon />} disabled={saving}>
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: 1.5 }}>
+              <Button
+                type="button"
+                variant="outlined"
+                color="warning"
+                startIcon={<DeleteSweepOutlinedIcon />}
+                disabled={purging || saving}
+                onClick={handlePurgeExpired}
+              >
+                {purging ? 'Purging...' : 'Purge Expired Transcripts'}
+              </Button>
+              <Button type="submit" variant="contained" startIcon={<SaveOutlinedIcon />} disabled={saving || purging}>
                 {saving ? 'Saving...' : 'Save System Settings'}
               </Button>
             </Box>

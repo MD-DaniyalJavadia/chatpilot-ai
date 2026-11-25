@@ -215,7 +215,9 @@ router.get(
           (SELECT COUNT(*) FROM KnowledgeChunks WHERE BusinessId = ?) AS knowledgeChunksCount,
           (SELECT COALESCE(SUM(TotalTokens), 0) FROM KnowledgeSources WHERE BusinessId = ?) AS knowledgeTokensIndexed
          FROM Businesses b
-         LEFT JOIN Subscriptions s ON s.BusinessId = b.BusinessId AND s.Status = 'Active'
+         LEFT JOIN Subscriptions s ON s.BusinessId = b.BusinessId
+           AND s.Status = 'Active'
+           AND (s.ExpiresOn IS NULL OR s.ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
          LEFT JOIN SubscriptionPlans sp ON sp.PlanId = s.PlanId
          WHERE b.BusinessId = ?
          ORDER BY s.SubscriptionId DESC

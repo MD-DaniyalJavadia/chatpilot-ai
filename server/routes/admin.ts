@@ -201,7 +201,9 @@ router.get('/ai-usage', authenticate, requireRoles('SuperAdmin'), (req, res) => 
         COALESCE(SUM(u.MessageCount), 0) AS widgetMessagesCount,
         COUNT(u.UsageLogId) AS apiCallsCount
        FROM Businesses b
-       LEFT JOIN Subscriptions s ON s.BusinessId = b.BusinessId AND s.Status = 'Active'
+       LEFT JOIN Subscriptions s ON s.BusinessId = b.BusinessId
+         AND s.Status = 'Active'
+         AND (s.ExpiresOn IS NULL OR s.ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
        LEFT JOIN SubscriptionPlans sp ON sp.PlanId = s.PlanId
        LEFT JOIN UsageLogs u ON u.BusinessId = b.BusinessId AND u.CreatedOn >= ?
        GROUP BY b.BusinessId, b.Name, b.Status, sp.Name, sp.MaxMonthlyMessages

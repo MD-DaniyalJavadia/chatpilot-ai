@@ -46,12 +46,19 @@ router.get('/', authenticate, requireRoles('SuperAdmin'), (req, res) => {
         b.Timezone AS timezone,
         b.Status AS status,
         b.CreatedOn AS createdOn,
-        COALESCE(sp.Name, 'Free') AS planName,
+        COALESCE((
+          SELECT sp.Name
+          FROM Subscriptions s
+          JOIN SubscriptionPlans sp ON sp.PlanId = s.PlanId
+          WHERE s.BusinessId = b.BusinessId
+            AND s.Status = 'Active'
+            AND (s.ExpiresOn IS NULL OR s.ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ORDER BY s.SubscriptionId DESC
+          LIMIT 1
+        ), 'Free') AS planName,
         (SELECT COUNT(*) FROM BusinessUsers bu WHERE bu.BusinessId = b.BusinessId) AS memberCount,
         (SELECT COUNT(*) FROM Chatbots c WHERE c.BusinessId = b.BusinessId) AS chatbotCount
       FROM Businesses b
-      LEFT JOIN Subscriptions s ON s.BusinessId = b.BusinessId AND s.Status = 'Active'
-      LEFT JOIN SubscriptionPlans sp ON sp.PlanId = s.PlanId
       ${whereSql}
       ORDER BY b.CreatedOn DESC
       LIMIT ? OFFSET ?`
@@ -92,8 +99,25 @@ router.patch('/:id/status', authenticate, requireRoles('SuperAdmin'), (req: Auth
     return;
   }
 
-  db.prepare(`UPDATE Businesses SET Status = ?, UpdatedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE BusinessId = ?`)
-    .run(status, businessId);
+  db.exec('BEGIN');
+  try {
+    db.prepare(`UPDATE Businesses SET Status = ?, UpdatedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE BusinessId = ?`)
+      .run(status, businessId);
+
+    if (status !== 'Active') {
+      db.prepare(
+        `UPDATE RefreshTokens
+         SET RevokedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+             UpdatedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE RevokedOn IS NULL
+           AND UserId IN (SELECT UserId FROM BusinessUsers WHERE BusinessId = ?)`
+      ).run(businessId);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 
   writeAuditLog({
     userId: req.user?.userId,
@@ -280,11 +304,18 @@ router.post(
     const planCheck = db
       .prepare(
         `SELECT
-          COALESCE(sp.MaxTeamMembers, 1) AS maxTeamMembers,
+          COALESCE((
+            SELECT sp.MaxTeamMembers
+            FROM Subscriptions s
+            JOIN SubscriptionPlans sp ON sp.PlanId = s.PlanId
+            WHERE s.BusinessId = b.BusinessId
+              AND s.Status = 'Active'
+              AND (s.ExpiresOn IS NULL OR s.ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            ORDER BY s.SubscriptionId DESC
+            LIMIT 1
+          ), 1) AS maxTeamMembers,
           (SELECT COUNT(*) FROM BusinessUsers WHERE BusinessId = ?) AS currentCount
         FROM Businesses b
-        LEFT JOIN Subscriptions s ON s.BusinessId = b.BusinessId AND s.Status = 'Active'
-        LEFT JOIN SubscriptionPlans sp ON sp.PlanId = s.PlanId
         WHERE b.BusinessId = ?`
       )
       .get(businessId, businessId) as { maxTeamMembers: number; currentCount: number } | undefined;

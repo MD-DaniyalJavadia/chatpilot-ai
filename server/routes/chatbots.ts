@@ -5,7 +5,6 @@ import { authenticate, requireRoles, type AuthenticatedRequest } from '../middle
 import { createRateLimiter } from '../middleware/rateLimit.ts';
 import {
   GeminiServiceError,
-  SUPPORTED_GEMINI_MODELS,
   generateGeminiReply,
   isGeminiConfigured,
   type PlaygroundTurn,
@@ -20,10 +19,41 @@ import { buildComposedInstruction } from '../services/promptBuilder.ts';
 const router = Router();
 const playgroundLimiter = createRateLimiter(30, 60 * 1000);
 
-const VALID_PROVIDERS = new Set(['GOOGLE_GEMINI']);
 const HEX_COLOR_REGEX = /^#[0-9a-fA-F]{6}$/;
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const VALID_WIDGET_POSITIONS = new Set(['bottom-right', 'bottom-left']);
+
+function validateActiveProviderAndModel(
+  providerCode: string,
+  modelId: string
+): { ok: true } | { ok: false; status: number; message: string } {
+  const row = db
+    .prepare(`SELECT Code, Name, SupportedModelsJson, IsActive FROM AIProviders WHERE Code = ?`)
+    .get(providerCode) as
+    | { Code: string; Name: string; SupportedModelsJson: string; IsActive: number }
+    | undefined;
+
+  if (!row) {
+    return { ok: false, status: 400, message: 'Selected AI provider is not supported.' };
+  }
+  if (row.IsActive !== 1) {
+    return { ok: false, status: 403, message: `AI provider "${row.Name}" is currently disabled by platform administrators.` };
+  }
+
+  let models: Array<{ id?: string }> = [];
+  try {
+    models = JSON.parse(row.SupportedModelsJson || '[]');
+  } catch {
+    models = [];
+  }
+
+  const allowed = models.some((m) => m && typeof m.id === 'string' && m.id === modelId);
+  if (!allowed) {
+    return { ok: false, status: 400, message: `Model "${modelId}" is not enabled in the ${row.Name} catalog.` };
+  }
+
+  return { ok: true };
+}
 
 function isValidHttpUrl(url: string): boolean {
   try {
@@ -194,11 +224,18 @@ router.get(
 
     const planRow = db
       .prepare(
-        `SELECT COALESCE(sp.MaxChatbots, 1) AS maxChatbots,
+        `SELECT COALESCE((
+                  SELECT sp.MaxChatbots
+                  FROM Subscriptions s
+                  JOIN SubscriptionPlans sp ON sp.PlanId = s.PlanId
+                  WHERE s.BusinessId = b.BusinessId
+                    AND s.Status = 'Active'
+                    AND (s.ExpiresOn IS NULL OR s.ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                  ORDER BY s.SubscriptionId DESC
+                  LIMIT 1
+                ), 1) AS maxChatbots,
                 (SELECT COUNT(*) FROM Chatbots WHERE BusinessId = ?) AS totalCount
          FROM Businesses b
-         LEFT JOIN Subscriptions s ON s.BusinessId = b.BusinessId AND s.Status = 'Active'
-         LEFT JOIN SubscriptionPlans sp ON sp.PlanId = s.PlanId
          WHERE b.BusinessId = ?`
       )
       .get(businessId, businessId) as { maxChatbots: number; totalCount: number } | undefined;
@@ -320,22 +357,26 @@ router.post(
       res.status(400).json({ success: false, message: 'Website URL must start with http:// or https://.' });
       return;
     }
-    if (!VALID_PROVIDERS.has(aiProvider)) {
-      res.status(400).json({ success: false, message: 'Please select a valid AI provider.' });
-      return;
-    }
-    if (!SUPPORTED_GEMINI_MODELS.has(aiModel)) {
-      res.status(400).json({ success: false, message: 'Selected Gemini model is not supported.' });
+    const providerCheck = validateActiveProviderAndModel(aiProvider, aiModel);
+    if (!providerCheck.ok) {
+      res.status(providerCheck.status).json({ success: false, message: providerCheck.message });
       return;
     }
 
     const quotaRow = db
       .prepare(
-        `SELECT COALESCE(sp.MaxChatbots, 1) AS maxChatbots,
+        `SELECT COALESCE((
+                  SELECT sp.MaxChatbots
+                  FROM Subscriptions s
+                  JOIN SubscriptionPlans sp ON sp.PlanId = s.PlanId
+                  WHERE s.BusinessId = b.BusinessId
+                    AND s.Status = 'Active'
+                    AND (s.ExpiresOn IS NULL OR s.ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                  ORDER BY s.SubscriptionId DESC
+                  LIMIT 1
+                ), 1) AS maxChatbots,
                 (SELECT COUNT(*) FROM Chatbots WHERE BusinessId = ?) AS usedCount
          FROM Businesses b
-         LEFT JOIN Subscriptions s ON s.BusinessId = b.BusinessId AND s.Status = 'Active'
-         LEFT JOIN SubscriptionPlans sp ON sp.PlanId = s.PlanId
          WHERE b.BusinessId = ?`
       )
       .get(businessId, businessId) as { maxChatbots: number; usedCount: number } | undefined;
@@ -481,12 +522,9 @@ router.put(
       res.status(400).json({ success: false, message: 'Website URL must start with http:// or https://.' });
       return;
     }
-    if (!VALID_PROVIDERS.has(aiProvider)) {
-      res.status(400).json({ success: false, message: 'Unsupported AI provider.' });
-      return;
-    }
-    if (!SUPPORTED_GEMINI_MODELS.has(aiModel)) {
-      res.status(400).json({ success: false, message: 'Unsupported Gemini model.' });
+    const providerCheck = validateActiveProviderAndModel(aiProvider, aiModel);
+    if (!providerCheck.ok) {
+      res.status(providerCheck.status).json({ success: false, message: providerCheck.message });
       return;
     }
     if (!Number.isFinite(temperature) || temperature < 0 || temperature > 2) {
@@ -812,6 +850,12 @@ router.post(
     }
     if (!Number.isFinite(maxOutputTokens) || maxOutputTokens < 128 || maxOutputTokens > 8192) {
       res.status(400).json({ success: false, message: 'Max output tokens must be between 128 and 8192.' });
+      return;
+    }
+
+    const providerCheck = validateActiveProviderAndModel(bot.aiProvider, model);
+    if (!providerCheck.ok) {
+      res.status(providerCheck.status).json({ success: false, message: providerCheck.message });
       return;
     }
 

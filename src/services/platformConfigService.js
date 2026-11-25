@@ -11,6 +11,11 @@ export const platformConfigService = {
     return res.data;
   },
 
+  async purgeExpiredConversations() {
+    const res = await apiClient.post('/admin/settings/purge-expired');
+    return res.data;
+  },
+
   async listAiProviders() {
     const res = await apiClient.get('/admin/ai-providers');
     return res.data.data;

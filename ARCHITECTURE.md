@@ -60,10 +60,10 @@ ChatPilot AI is a multi-tenant AI Chatbot SaaS platform engineered with strict t
 ```
 src/
 ├── components/
-│   ├── common/          # StatCard, DataTable, ConfirmDialog, PhasePlaceholderPage
-│   └── navigation/      # SidebarNav, TopBar
+│   ├── common/          # StatCard, StatusText, ConfirmDialog, ConversationTranscriptDialog, TicketThreadDialog
+│   └── knowledge/       # SourceChunksDialog
 ├── context/
-│   ├── AuthContext.jsx  # In-memory JWT & user/business session state
+│   ├── AuthContext.jsx  # In-memory JWT, user/business session & platform bootstrap flags
 │   └── ThemeContext.jsx # Light/Dark MUI + Tailwind theme synchronization
 ├── hooks/
 │   ├── useAuth.js
@@ -73,40 +73,62 @@ src/
 │   └── DashboardLayout.jsx
 ├── pages/
 │   ├── auth/            # LoginPage, RegisterPage
-│   ├── admin/           # SuperAdminDashboardPage, BusinessesManagementPage, UsersManagementPage, AuditLogsPage
-│   ├── business/        # BusinessDashboardPage, BusinessProfilePage, TeamMembersPage
+│   ├── admin/           # SuperAdminDashboardPage, BusinessesManagementPage, UsersManagementPage, AdminChatbotsPage,
+│   │                    # AdminPlansPage, AdminSubscriptionsPage, AdminPaymentsPage, AdminAiUsagePage,
+│   │                    # AdminConversationsPage, AdminTicketsPage, AdminSystemSettingsPage, AdminAiProvidersPage, AuditLogsPage
+│   ├── business/        # BusinessDashboardPage, BusinessProfilePage, ChatbotsListPage, CreateChatbotPage,
+│   │                    # ChatbotConfigPage, ChatbotPlaygroundPage, KnowledgeBasePage, DocumentUploadsPage,
+│   │                    # WebsiteSourcesPage, FaqManagementPage, ConversationsPage, WidgetIntegrationPage,
+│   │                    # AnalyticsPage, TeamMembersPage, BusinessSubscriptionPage, UsageStatsPage, BusinessSupportPage
 │   └── shared/          # AccountSettingsPage
 ├── routes/
 │   ├── ProtectedRoute.jsx
 │   └── AppRoutes.jsx
-├── services/
-│   ├── apiClient.js     # Axios instance + Bearer token + 401 refresh rotation queue
-│   ├── authService.js
-│   ├── businessService.js
-│   ├── dashboardService.js
-│   └── userService.js
+├── schemas/
+│   └── phase6Schemas.js
+├── services/            # apiClient, authService, businessService, chatbotService, knowledgeService, widgetService,
+│                        # conversationsService, analyticsService, adminMonitoringService, billingService,
+│                        # ticketsService, platformConfigService, dashboardService, userService
 ├── utils/
 │   └── formatters.js
-├── validations/
-│   ├── authSchemas.js   # Yup schemas
-│   └── businessSchemas.js
+├── validations/         # authSchemas, businessSchemas, chatbotSchemas, knowledgeSchemas, widgetSchemas
 ├── App.jsx
 ├── index.css
 └── main.jsx
+```
+
+### Live Preview Backend (`/server.ts` & `/server/` — Express + Node SQLite)
+```
+server/
+├── config.ts
+├── db.ts                # Schema, migrations, seeds, getSystemSettings, purgeExpiredConversations, writeAuditLog
+├── middleware/          # auth.ts (JWT + RBAC + BusinessId), rateLimit.ts (static & dynamic rate limiters)
+├── routes/              # auth, dashboard, businesses, users, chatbots, domains, knowledge, widget,
+│                        # conversations, analytics, billing, tickets, settings, admin
+├── services/            # geminiService (chat + SSE stream + embeddings), ragService, promptBuilder,
+│                        # documentExtractorService, websiteCrawlerService, domainAllowlistService, paymentGatewayService
+├── utils/               # crypto.ts
+└── widgetScript.ts      # Standalone Shadow DOM embed script (/widget.js)
 ```
 
 ### Backend Target (`/backend-dotnet/ChatPilot.API/` — ASP.NET Core 8 + Dapper)
 ```
 backend-dotnet/ChatPilot.API/
 ├── Configuration/       # JwtSettings.cs
-├── Controllers/         # AuthController, BusinessesController, UsersController, DashboardController
-├── DTOs/                # AuthDtos, BusinessDtos, DashboardDtos, CommonDtos
-├── Helpers/             # PasswordHasher.cs, ApiResponse.cs
-├── Interfaces/          # IAuthService, IJwtTokenService, IBusinessService, IDashboardService, Repositories
-├── Middleware/          # ExceptionHandlingMiddleware.cs, TenantContextMiddleware.cs
-├── Models/              # User, Role, Business, BusinessUser, RefreshToken, SubscriptionPlan, Subscription, AuditLog
-├── Repositories/        # UserRepository, BusinessRepository, DashboardRepository, AuditLogRepository
-├── Services/            # AuthService, JwtTokenService, BusinessService, DashboardService
+├── Controllers/         # Controllers.cs, ChatbotsController.cs, KnowledgeController.cs, DomainsController.cs,
+│                        # WidgetController.cs, ConversationsController.cs, AnalyticsController.cs,
+│                        # AdminMonitoringController.cs, BillingController.cs, TicketsController.cs, PlatformConfigController.cs
+├── DTOs/                # ApiDtos.cs, ChatbotDtos.cs, KnowledgeDtos.cs, WidgetDtos.cs, AnalyticsDtos.cs, Phase6Dtos.cs
+├── Helpers/             # ApiHelpers.cs
+├── Interfaces/          # IRepositoriesAndServices.cs, IChatbotInterfaces.cs, IKnowledgeInterfaces.cs,
+│                        # IWidgetInterfaces.cs, IAnalyticsInterfaces.cs, IPhase6Interfaces.cs
+├── Middleware/          # ApiMiddleware.cs
+├── Models/              # Entities.cs, ChatbotEntities.cs, KnowledgeEntities.cs, WidgetEntities.cs,
+│                        # AnalyticsEntities.cs, Phase6Entities.cs
+├── Repositories/        # Repositories.cs, ChatbotRepository.cs, KnowledgeRepository.cs, WidgetRepository.cs,
+│                        # AnalyticsRepository.cs, Phase6Repository.cs
+├── Services/            # AuthServices.cs, ChatbotService.cs, GeminiService.cs, KnowledgeServices.cs,
+│                        # WidgetService.cs, AnalyticsService.cs, Phase6Services.cs
 ├── appsettings.json
 ├── ChatPilot.API.csproj
 └── Program.cs
@@ -117,7 +139,17 @@ backend-dotnet/ChatPilot.API/
 database/sqlserver/
 ├── 001_CreateTables.sql
 ├── 002_SeedData.sql
-└── 003_StoredProcedures_Phase1.sql
+├── 003_StoredProcedures_Phase1.sql
+├── 004_Phase2_ChatbotsAndPlayground.sql
+├── 005_StoredProcedures_Phase2.sql
+├── 006_Phase3_KnowledgeBaseAndRag.sql
+├── 007_StoredProcedures_Phase3.sql
+├── 008_Phase4_WidgetAndDomains.sql
+├── 009_StoredProcedures_Phase4.sql
+├── 010_Phase5_ConversationsAndAnalytics.sql
+├── 011_StoredProcedures_Phase5.sql
+├── 012_Phase6_BillingTicketsAndSettings.sql
+└── 013_StoredProcedures_Phase6.sql
 ```
 
 ---
@@ -176,20 +208,20 @@ All tables use `IDENTITY(1,1)` surrogate primary keys, explicit foreign keys, an
 - `PUT /api/v1/account/password` — `[Authenticated]` Verify current password and rotate to new hash.
 - `GET /api/v1/audit-logs` — `[SuperAdmin | BusinessOwner | BusinessAdmin]` Scoped audit logs.
 
-### Phases 2–6 Endpoints (Architected)
-- **Phase 2**: `/api/v1/chatbots/*`, `/api/v1/chatbots/:id/settings`, `/api/v1/chatbots/:id/domains`
-- **Phase 3**: `/api/v1/chatbots/:id/sources/*`, `/api/v1/chatbots/:id/faqs/*`, `/api/v1/chatbots/:id/playground`
-- **Phase 4**: `/api/v1/widget/:publicId/config`, `/api/v1/widget/:publicId/chat` (streaming + CORS/domain verification)
-- **Phase 5**: `/api/v1/conversations/*`, `/api/v1/analytics/*`
-- **Phase 6**: `/api/v1/plans/*`, `/api/v1/subscriptions/*`, `/api/v1/payments/*`, `/api/v1/tickets/*`, `/api/v1/settings/*`
+### Phases 2–6 Endpoints (Implemented & Live)
+- **Phase 2**: `/api/v1/chatbots/*`, `/api/v1/chatbots/providers`, `/api/v1/chatbots/:id/playground`
+- **Phase 3**: `/api/v1/chatbots/:id/sources/*` (`upload`, `website`, `faq`, `manual`, `reindex`, `search`)
+- **Phase 4**: `/api/v1/chatbots/:id/domains`, `/api/v1/chatbots/:id/widget-settings`, `GET /widget.js`, `/api/v1/widget/:publicId/config`, `/api/v1/widget/:publicId/history`, `POST /api/v1/widget/:publicId/chat` (JSON & SSE streaming + CORS/domain verification + dynamic `SystemSettings` rate limit)
+- **Phase 5**: `/api/v1/conversations/*` (including formula-safe `/export`), `/api/v1/analytics/overview`, `/api/v1/usage/summary`, `/api/v1/admin/chatbots`, `/api/v1/admin/ai-usage`, `/api/v1/admin/conversations/*`
+- **Phase 6**: `/api/v1/plans/*`, `/api/v1/subscription/*`, `/api/v1/admin/subscriptions/*`, `/api/v1/admin/payments/*`, `/api/v1/tickets/*`, `/api/v1/admin/tickets/*`, `/api/v1/admin/settings/*`, `/api/v1/admin/ai-providers/*`
 
 ---
 
 ## 5. Authentication & Authorization Strategy
 
 1. **Password Security**: Server-side `scrypt` (Node runtime) / `BCrypt` (ASP.NET Core) with random per-user salts and constant-time comparison (`timingSafeEqual`).
-2. **JWT Access Tokens**: Short-lived (15 min) HMAC-SHA256 signed JWT containing `sub` (`UserId`), `email`, `role`, `businessId`, `jti`, `iat`, `exp`.
-3. **Refresh Token Rotation**: Cryptographically random 48-byte tokens stored in `RefreshTokens` as SHA-256 digests (`TokenHash`). Every `/refresh` call issues a new refresh token, marks the prior token revoked with `ReplacedByTokenHash`, and invalidates all active tokens for that user if a revoked token is replayed.
+2. **JWT Access Tokens**: Short-lived (15 min) HMAC-SHA256 signed JWT containing `sub` (`UserId`), `email`, `role`, `businessId`, `jti`, `iat`, `exp`, with strict header (`alg=HS256`, `typ=JWT`) and positive integer `sub` validation.
+3. **Refresh Token Rotation & Revocation**: Cryptographically random 48-byte tokens stored in `RefreshTokens` as SHA-256 digests (`TokenHash`). Every `/refresh` call issues a new refresh token, marks the prior token revoked with `ReplacedByTokenHash`, and invalidates all active tokens on token replay, password change, user deactivation, or workspace suspension.
 4. **Client Token Handling**: Tokens are stored strictly in React memory (`AuthContext`), never in `localStorage` or `sessionStorage`, eliminating XSS token theft via web storage.
 5. **RBAC**:
    - `SuperAdmin`: Full platform administration across all businesses, plans, users, and audit logs.
@@ -202,18 +234,18 @@ All tables use `IDENTITY(1,1)` surrogate primary keys, explicit foreign keys, an
 ## 6. Multi-Tenant Security Strategy
 
 1. **JWT-Derived Tenant Context**: `BusinessId` is never trusted from client request bodies or query strings on tenant endpoints; it is resolved exclusively from the verified JWT + `BusinessUsers` database membership on every request.
-2. **Suspended/Deactivated Enforcement**: If a business status is `Suspended` or `Deactivated`, tenant API requests and login attempts for that business are rejected with `403 Forbidden`.
-3. **Parameterized Data Access**: Every SQLite prepared statement and SQL Server stored procedure binds `@BusinessId` explicitly in `WHERE` clauses.
-4. **Rate Limiting & Abuse Prevention**: IP-keyed sliding-window rate limiters protect `/api/v1/auth/*` endpoints against credential stuffing.
-5. **Audit Trail**: Every registration, login, status change, team addition, and profile mutation writes an immutable row to `AuditLogs`.
+2. **Suspended/Deactivated Enforcement**: If a business status is `Suspended` or `Deactivated`, tenant API requests and login attempts for that business are rejected with `403 Forbidden`, and active refresh tokens for its members are revoked.
+3. **Parameterized Data Access**: Every SQLite prepared statement (`PRAGMA foreign_keys = ON`, WAL mode, `busy_timeout = 5000`) and SQL Server stored procedure binds `@BusinessId` explicitly in `WHERE` clauses.
+4. **Rate Limiting, SSRF & Allowlist Enforcement**: Sliding-window rate limiters (with automatic expired-bucket pruning) protect `/api/v1/auth/*` and `/api/v1/widget/*`; the crawler blocks IPv4/IPv6 private and cloud metadata ranges; headerless widget calls are rejected when domain allowlisting is enabled.
+5. **Audit Trail**: Every registration, login, status change, team addition, billing update, and profile mutation writes an immutable row to `AuditLogs`.
 
 ---
 
 ## 7. Development Phase Breakdown
 
-- **Phase 1 (Current — Foundation & Auth)**: Project setup, React + MUI + Router + Axios + Hook Form + Yup foundation, ASP.NET Core 8 + Dapper + SQL Server scripts, live Express + SQLite API mirror, JWT + Refresh Token rotation, User Registration & Login, First-Run Super Admin claim, RBAC, Light/Dark modes, Super Admin & Business Customer dashboard layouts.
-- **Phase 2 (Chatbot Core & Playground)**: Chatbot CRUD, subscription limit enforcement, ChatbotSettings customization, Gemini API server-side integration, testing playground.
-- **Phase 3 (Knowledge Base & RAG Pipeline)**: PDF/DOCX/TXT upload validation, website crawler with SSRF protection, FAQ & manual text ingestion, chunking, Gemini embeddings, vector similarity retrieval, grounded RAG answering.
-- **Phase 4 (Embeddable JS Chat Widget)**: Standalone `widget.js`, public chatbot config endpoint, domain allowlist & CORS enforcement, floating responsive chat UI, real-time messaging & history.
-- **Phase 5 (Conversations & Recharts Analytics)**: Conversation search/filter/resolution/export, unanswered question tracking, Recharts dashboards (daily/monthly conversations, token usage, chatbot performance).
-- **Phase 6 (Subscriptions, Billing & Operations)**: Super Admin plan management, modular payment gateway adapter, usage metering & enforcement, support tickets, AI provider settings.
+- **Phase 1 (Completed — Foundation & Auth)**: Project setup, React + MUI + Router + Axios + Hook Form + Yup foundation, ASP.NET Core 8 + Dapper + SQL Server scripts, live Express + SQLite API mirror, JWT + Refresh Token rotation, User Registration & Login, First-Run Super Admin claim, RBAC, Light/Dark modes, Super Admin & Business Customer dashboard layouts.
+- **Phase 2 (Completed — Chatbot Core & Playground)**: Chatbot CRUD, subscription limit enforcement, ChatbotSettings customization, Gemini API server-side integration, testing playground.
+- **Phase 3 (Completed — Knowledge Base & RAG Pipeline)**: PDF/DOCX/TXT upload validation, website crawler with SSRF protection, FAQ & manual text ingestion, chunking, Gemini embeddings, vector similarity retrieval, grounded RAG answering.
+- **Phase 4 (Completed — Embeddable JS Chat Widget)**: Standalone `widget.js`, public chatbot config endpoint, domain allowlist & CORS enforcement, floating responsive Shadow DOM chat UI, real-time SSE streaming messaging & history.
+- **Phase 5 (Completed — Conversations & Recharts Analytics)**: Conversation search/filter/resolution/export, unanswered question tracking, Recharts dashboards (daily/monthly conversations, token usage, chatbot performance), Super Admin monitoring.
+- **Phase 6 (Completed — Subscriptions, Billing & Operations)**: Super Admin plan management, modular payment gateway adapter, usage metering & enforcement, support tickets, AI provider catalog enforcement, and live system settings enforcement (maintenance notice, registration lock, widget rate limit, transcript retention purge).

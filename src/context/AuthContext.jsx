@@ -13,6 +13,10 @@ export function AuthProvider({ children }) {
   const [bootstrapStatus, setBootstrapStatus] = useState({
     superAdminClaimed: true,
     requiresPasscode: false,
+    allowPublicRegistration: true,
+    maintenanceMode: false,
+    supportContactEmail: 'support@chatpilot.local',
+    defaultTrialDays: 14,
     loaded: false,
   });
 

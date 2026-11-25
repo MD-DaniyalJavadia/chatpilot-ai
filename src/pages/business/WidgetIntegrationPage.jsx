@@ -524,7 +524,13 @@ export function ChatPilotEmbed() {
                 component="form"
                 onSubmit={domainForm.handleSubmit(onAddDomain)}
                 noValidate
-                sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start', mb: 3 }}
+                sx={{
+                  display: 'flex',
+                  flexDirection: { xs: 'column', sm: 'row' },
+                  gap: 1.5,
+                  alignItems: { xs: 'stretch', sm: 'flex-start' },
+                  mb: 3,
+                }}
               >
                 <TextField
                   size="small"

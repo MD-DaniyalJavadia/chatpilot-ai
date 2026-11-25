@@ -3,6 +3,7 @@ import { db, writeAuditLog } from '../db.ts';
 import { authenticate, requireRoles, type AuthenticatedRequest } from '../middleware/auth.ts';
 import {
   executeSubscriptionCheckout,
+  isSandboxBillingEnabled,
   isStripeConfigured,
   type PaymentProviderName,
 } from '../services/paymentGatewayService.ts';
@@ -40,7 +41,10 @@ router.get('/plans', authenticate, (req: AuthenticatedRequest, res) => {
         IsActive AS isActive,
         CreatedOn AS createdOn,
         UpdatedOn AS updatedOn,
-        (SELECT COUNT(*) FROM Subscriptions s WHERE s.PlanId = SubscriptionPlans.PlanId AND s.Status = 'Active') AS activeTenantsCount
+        (SELECT COUNT(*) FROM Subscriptions s
+         WHERE s.PlanId = SubscriptionPlans.PlanId
+           AND s.Status = 'Active'
+           AND (s.ExpiresOn IS NULL OR s.ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now'))) AS activeTenantsCount
        FROM SubscriptionPlans
        ${includeInactive ? '' : 'WHERE IsActive = 1'}
        ORDER BY MonthlyPriceUsd ASC, PlanId ASC`
@@ -52,6 +56,7 @@ router.get('/plans', authenticate, (req: AuthenticatedRequest, res) => {
     data: {
       items: rows.map(normalizePlanRow),
       stripeConfigured: isStripeConfigured(),
+      sandboxBillingEnabled: isSandboxBillingEnabled(),
     },
   });
 });
@@ -293,22 +298,53 @@ router.get('/subscription', authenticate, requireRoles('BusinessOwner'), (req: A
         s.BusinessId AS businessId,
         s.PlanId AS planId,
         s.BillingCycle AS billingCycle,
-        s.Status AS status,
+        CASE
+          WHEN s.Status = 'Active' AND s.ExpiresOn IS NOT NULL AND s.ExpiresOn <= strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            THEN 'Expired'
+          ELSE s.Status
+        END AS status,
         s.StartsOn AS startsOn,
         s.ExpiresOn AS expiresOn,
-        sp.Code AS planCode,
-        sp.Name AS planName,
+        CASE
+          WHEN s.Status = 'Active' AND (s.ExpiresOn IS NULL OR s.ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            THEN sp.Code
+          ELSE 'FREE'
+        END AS planCode,
+        CASE
+          WHEN s.Status = 'Active' AND (s.ExpiresOn IS NULL OR s.ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            THEN sp.Name
+          ELSE 'Free'
+        END AS planName,
         sp.Description AS planDescription,
         sp.MonthlyPriceUsd AS monthlyPriceUsd,
         sp.YearlyPriceUsd AS yearlyPriceUsd,
-        sp.MaxChatbots AS maxChatbots,
-        sp.MaxMonthlyMessages AS maxMonthlyMessages,
-        sp.MaxTeamMembers AS maxTeamMembers,
-        sp.AllowWebsiteIngestion AS allowWebsiteIngestion
+        CASE
+          WHEN s.Status = 'Active' AND (s.ExpiresOn IS NULL OR s.ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            THEN sp.MaxChatbots
+          ELSE 1
+        END AS maxChatbots,
+        CASE
+          WHEN s.Status = 'Active' AND (s.ExpiresOn IS NULL OR s.ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            THEN sp.MaxMonthlyMessages
+          ELSE 250
+        END AS maxMonthlyMessages,
+        CASE
+          WHEN s.Status = 'Active' AND (s.ExpiresOn IS NULL OR s.ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            THEN sp.MaxTeamMembers
+          ELSE 1
+        END AS maxTeamMembers,
+        CASE
+          WHEN s.Status = 'Active' AND (s.ExpiresOn IS NULL OR s.ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            THEN sp.AllowWebsiteIngestion
+          ELSE 0
+        END AS allowWebsiteIngestion
        FROM Subscriptions s
        JOIN SubscriptionPlans sp ON sp.PlanId = s.PlanId
        WHERE s.BusinessId = ?
-       ORDER BY CASE WHEN s.Status = 'Active' THEN 0 ELSE 1 END, s.SubscriptionId DESC
+       ORDER BY CASE
+         WHEN s.Status = 'Active' AND (s.ExpiresOn IS NULL OR s.ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now')) THEN 0
+         ELSE 1
+       END, s.SubscriptionId DESC
        LIMIT 1`
     )
     .get(businessId) as Record<string, unknown> | undefined;
@@ -361,6 +397,7 @@ router.get('/subscription', authenticate, requireRoles('BusinessOwner'), (req: A
       plans: plans.map(normalizePlanRow),
       payments,
       stripeConfigured: isStripeConfigured(),
+      sandboxBillingEnabled: isSandboxBillingEnabled(),
     },
   });
 });
@@ -375,11 +412,13 @@ router.post('/subscription/checkout', authenticate, requireRoles('BusinessOwner'
 
   const planId = Number(req.body?.planId);
   const billingCycle = req.body?.billingCycle === 'Yearly' ? 'Yearly' : 'Monthly';
-  const rawProvider = typeof req.body?.provider === 'string' ? req.body.provider : 'SandboxCard';
-  const provider: PaymentProviderName =
-    rawProvider === 'Stripe' || rawProvider === 'ManualInvoice' || rawProvider === 'SandboxCard'
-      ? rawProvider
-      : 'SandboxCard';
+  const rawProvider = typeof req.body?.provider === 'string' ? req.body.provider.trim() : 'SandboxCard';
+
+  if (rawProvider !== 'Stripe' && rawProvider !== 'ManualInvoice' && rawProvider !== 'SandboxCard') {
+    res.status(400).json({ success: false, message: 'Invalid payment provider. Choose Stripe, ManualInvoice, or SandboxCard.' });
+    return;
+  }
+  const provider: PaymentProviderName = rawProvider;
 
   if (!Number.isInteger(planId) || planId <= 0) {
     res.status(400).json({ success: false, message: 'Please select a valid subscription plan.' });
@@ -409,6 +448,14 @@ router.post('/subscription/checkout', authenticate, requireRoles('BusinessOwner'
 
   const amountUsd = billingCycle === 'Yearly' ? plan.YearlyPriceUsd : plan.MonthlyPriceUsd;
 
+  if (provider === 'SandboxCard' && amountUsd > 0 && !isSandboxBillingEnabled()) {
+    res.status(400).json({
+      success: false,
+      message: 'Sandbox card checkout is disabled in production mode. Please use Stripe or Manual Invoice.',
+    });
+    return;
+  }
+
   try {
     const gatewayResult = await executeSubscriptionCheckout({
       businessId,
@@ -419,6 +466,8 @@ router.post('/subscription/checkout', authenticate, requireRoles('BusinessOwner'
       provider,
     });
 
+    const isSettled = gatewayResult.status === 'Succeeded';
+    const nextSubscriptionStatus = isSettled ? 'Active' : 'PastDue';
     const daysToAdd = billingCycle === 'Yearly' ? 365 : 30;
     const expiresOn = new Date(Date.now() + daysToAdd * 86400 * 1000).toISOString();
 
@@ -427,18 +476,27 @@ router.post('/subscription/checkout', authenticate, requireRoles('BusinessOwner'
 
     db.exec('BEGIN');
     try {
-      db.prepare(
-        `UPDATE Subscriptions
-         SET Status = 'Cancelled', UpdatedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE BusinessId = ? AND Status IN ('Active', 'PastDue')`
-      ).run(businessId);
+      if (isSettled) {
+        db.prepare(
+          `UPDATE Subscriptions
+           SET Status = 'Cancelled', UpdatedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+           WHERE BusinessId = ? AND Status IN ('Active', 'PastDue')`
+        ).run(businessId);
+      } else {
+        // Keep existing Active plan untouched until invoice/payment settles; replace only stale PastDue attempts
+        db.prepare(
+          `UPDATE Subscriptions
+           SET Status = 'Cancelled', UpdatedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+           WHERE BusinessId = ? AND Status = 'PastDue'`
+        ).run(businessId);
+      }
 
       const subRes = db
         .prepare(
           `INSERT INTO Subscriptions (BusinessId, PlanId, BillingCycle, Status, StartsOn, ExpiresOn)
-           VALUES (?, ?, ?, 'Active', strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?)`
+           VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?)`
         )
-        .run(businessId, plan.PlanId, billingCycle, expiresOn);
+        .run(businessId, plan.PlanId, billingCycle, nextSubscriptionStatus, expiresOn);
       newSubscriptionId = Number(subRes.lastInsertRowid);
 
       const payRes = db
@@ -466,10 +524,10 @@ router.post('/subscription/checkout', authenticate, requireRoles('BusinessOwner'
     writeAuditLog({
       userId: req.user?.userId,
       businessId,
-      action: 'SubscriptionChanged',
+      action: isSettled ? 'SubscriptionChanged' : 'SubscriptionInvoiceIssued',
       entityType: 'Subscription',
       entityId: newSubscriptionId,
-      details: `Switched to ${plan.Name} (${billingCycle}) via ${gatewayResult.provider} [${gatewayResult.status}]`,
+      details: `${isSettled ? 'Activated' : 'Requested'} ${plan.Name} (${billingCycle}) via ${gatewayResult.provider} [${gatewayResult.status}]`,
       ipAddress: req.ip,
     });
 
@@ -478,6 +536,7 @@ router.post('/subscription/checkout', authenticate, requireRoles('BusinessOwner'
       message: gatewayResult.gatewayMessage,
       data: {
         subscriptionId: newSubscriptionId,
+        subscriptionStatus: nextSubscriptionStatus,
         paymentId: newPaymentId,
         planId: plan.PlanId,
         planName: plan.Name,
@@ -507,7 +566,9 @@ router.post('/subscription/cancel', authenticate, requireRoles('BusinessOwner'),
       `SELECT s.SubscriptionId, sp.Code AS planCode, sp.Name AS planName
        FROM Subscriptions s
        JOIN SubscriptionPlans sp ON sp.PlanId = s.PlanId
-       WHERE s.BusinessId = ? AND s.Status = 'Active'
+       WHERE s.BusinessId = ?
+         AND s.Status = 'Active'
+         AND (s.ExpiresOn IS NULL OR s.ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
        ORDER BY s.SubscriptionId DESC
        LIMIT 1`
     )
@@ -684,11 +745,27 @@ router.patch('/admin/subscriptions/:id', authenticate, requireRoles('SuperAdmin'
         ? 'Monthly'
         : existing.BillingCycle;
 
-  db.prepare(
-    `UPDATE Subscriptions
-     SET PlanId = ?, BillingCycle = ?, Status = ?, UpdatedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-     WHERE SubscriptionId = ?`
-  ).run(nextPlanId, nextCycle, nextStatus, subscriptionId);
+  db.exec('BEGIN');
+  try {
+    if (nextStatus === 'Active') {
+      db.prepare(
+        `UPDATE Subscriptions
+         SET Status = 'Cancelled', UpdatedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE BusinessId = ? AND SubscriptionId != ? AND Status = 'Active'`
+      ).run(existing.BusinessId, subscriptionId);
+    }
+
+    db.prepare(
+      `UPDATE Subscriptions
+       SET PlanId = ?, BillingCycle = ?, Status = ?, UpdatedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+       WHERE SubscriptionId = ?`
+    ).run(nextPlanId, nextCycle, nextStatus, subscriptionId);
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 
   writeAuditLog({
     userId: req.user?.userId,
@@ -805,8 +882,22 @@ router.patch('/admin/payments/:id/status', authenticate, requireRoles('SuperAdmi
   }
 
   const payment = db
-    .prepare(`SELECT PaymentId, BusinessId, PaidOn FROM Payments WHERE PaymentId = ?`)
-    .get(paymentId) as { PaymentId: number; BusinessId: number; PaidOn: string | null } | undefined;
+    .prepare(
+      `SELECT p.PaymentId, p.BusinessId, p.SubscriptionId, p.PaidOn, s.BillingCycle, s.Status AS subStatus
+       FROM Payments p
+       JOIN Subscriptions s ON s.SubscriptionId = p.SubscriptionId
+       WHERE p.PaymentId = ?`
+    )
+    .get(paymentId) as
+    | {
+        PaymentId: number;
+        BusinessId: number;
+        SubscriptionId: number;
+        PaidOn: string | null;
+        BillingCycle: string;
+        subStatus: string;
+      }
+    | undefined;
 
   if (!payment) {
     res.status(404).json({ success: false, message: 'Payment record not found.' });
@@ -818,11 +909,72 @@ router.patch('/admin/payments/:id/status', authenticate, requireRoles('SuperAdmi
       ? payment.PaidOn || new Date().toISOString()
       : payment.PaidOn;
 
-  db.prepare(
-    `UPDATE Payments
-     SET Status = ?, PaidOn = ?, UpdatedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-     WHERE PaymentId = ?`
-  ).run(status, paidOn, paymentId);
+  db.exec('BEGIN');
+  try {
+    db.prepare(
+      `UPDATE Payments
+       SET Status = ?, PaidOn = ?, UpdatedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+       WHERE PaymentId = ?`
+    ).run(status, paidOn, paymentId);
+
+    if (status === 'Succeeded' && payment.subStatus === 'PastDue') {
+      const daysToAdd = payment.BillingCycle === 'Yearly' ? 365 : 30;
+      const newExpiresOn = new Date(Date.now() + daysToAdd * 86400 * 1000).toISOString();
+
+      db.prepare(
+        `UPDATE Subscriptions
+         SET Status = 'Cancelled', UpdatedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE BusinessId = ? AND SubscriptionId != ? AND Status IN ('Active', 'PastDue')`
+      ).run(payment.BusinessId, payment.SubscriptionId);
+
+      db.prepare(
+        `UPDATE Subscriptions
+         SET Status = 'Active',
+             StartsOn = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+             ExpiresOn = ?,
+             UpdatedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE SubscriptionId = ? AND BusinessId = ?`
+      ).run(newExpiresOn, payment.SubscriptionId, payment.BusinessId);
+    } else if ((status === 'Failed' || status === 'Refunded') && payment.subStatus === 'PastDue') {
+      db.prepare(
+        `UPDATE Subscriptions
+         SET Status = 'Cancelled', UpdatedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE SubscriptionId = ? AND BusinessId = ?`
+      ).run(payment.SubscriptionId, payment.BusinessId);
+    } else if (status === 'Refunded' && payment.subStatus === 'Active') {
+      db.prepare(
+        `UPDATE Subscriptions
+         SET Status = 'Cancelled', UpdatedOn = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE SubscriptionId = ? AND BusinessId = ?`
+      ).run(payment.SubscriptionId, payment.BusinessId);
+
+      const hasOtherActive = db
+        .prepare(
+          `SELECT SubscriptionId FROM Subscriptions
+           WHERE BusinessId = ? AND Status = 'Active'
+             AND (ExpiresOn IS NULL OR ExpiresOn > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+           LIMIT 1`
+        )
+        .get(payment.BusinessId);
+
+      if (!hasOtherActive) {
+        const freePlan = db.prepare(`SELECT PlanId FROM SubscriptionPlans WHERE Code = 'FREE'`).get() as
+          | { PlanId: number }
+          | undefined;
+        if (freePlan) {
+          db.prepare(
+            `INSERT INTO Subscriptions (BusinessId, PlanId, BillingCycle, Status, StartsOn)
+             VALUES (?, ?, 'Monthly', 'Active', strftime('%Y-%m-%dT%H:%M:%fZ','now'))`
+          ).run(payment.BusinessId, freePlan.PlanId);
+        }
+      }
+    }
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 
   writeAuditLog({
     userId: req.user?.userId,
