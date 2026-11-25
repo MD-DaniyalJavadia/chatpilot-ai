@@ -1,0 +1,6 @@
+{
+  "name": "ChatPilot AI",
+  "description": "Multi-tenant AI chatbot SaaS platform with RAG knowledge bases, embeddable chat widgets, and role-based analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
